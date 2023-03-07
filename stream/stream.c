@@ -51,6 +51,7 @@ extern const stream_info_t stream_info_ffmpeg;
 extern const stream_info_t stream_info_ffmpeg_unsafe;
 extern const stream_info_t stream_info_avdevice;
 extern const stream_info_t stream_info_file;
+extern const stream_info_t stream_info_slice;
 extern const stream_info_t stream_info_fd;
 extern const stream_info_t stream_info_ifo_dvdnav;
 extern const stream_info_t stream_info_dvdnav;
@@ -88,6 +89,7 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_mf,
     &stream_info_edl,
     &stream_info_file,
+    &stream_info_slice,
     &stream_info_fd,
     &stream_info_cb,
     NULL
@@ -439,8 +441,7 @@ int stream_create_with_args(struct stream_open_args *args, struct stream **ret)
 
         if (r == STREAM_UNSAFE) {
             mp_err(log, "\nRefusing to load potentially unsafe URL from a playlist.\n"
-                   "Use --playlist=file or the --load-unsafe-playlists option to "
-                   "load it anyway.\n\n");
+                   "Use the --load-unsafe-playlists option to load it anyway.\n\n");
         } else if (r == STREAM_NO_MATCH || r == STREAM_UNSUPPORTED) {
             mp_err(log, "No protocol handler found to open URL %s\n", args->url);
             mp_err(log, "The protocol is either unsupported, or was disabled "
@@ -611,11 +612,19 @@ int stream_read(stream_t *s, void *mem, int total)
     return total;
 }
 
+// Read ahead so that at least forward_size bytes are readable ahead. Returns
+// the actual forward amount available (restricted by EOF or buffer limits).
+int stream_peek(stream_t *s, int forward_size)
+{
+    while (stream_read_more(s, forward_size)) {}
+    return s->buf_end - s->buf_cur;
+}
+
 // Like stream_read(), but do not advance the current position. This may resize
 // the buffer to satisfy the read request.
 int stream_read_peek(stream_t *s, void *buf, int buf_size)
 {
-    while (stream_read_more(s, buf_size)) {}
+    stream_peek(s, buf_size);
     return ring_copy(s, buf, buf_size, s->buf_cur);
 }
 

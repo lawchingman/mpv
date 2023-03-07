@@ -850,7 +850,6 @@ static int init_device(struct ao *ao, int mode)
     MP_VERBOSE(ao, "period size: %d samples\n", (int)p->outburst);
 
     ao->device_buffer = p->buffersize;
-    ao->period_size = p->outburst;
 
     p->convert.channels = ao->channels.num;
 
@@ -916,7 +915,7 @@ static int init(struct ao *ao)
 
 // Function for dealing with playback state. This attempts to recover the ALSA
 // state (bring it into SND_PCM_STATE_{PREPARED,RUNNING,PAUSED,UNDERRUN}). If
-// state!=NULL, fill it after recovery.
+// state!=NULL, fill it after recovery is attempted.
 // Returns true if PCM is in one the expected states.
 static bool recover_and_get_state(struct ao *ao, struct mp_pcm_state *state)
 {
@@ -934,9 +933,18 @@ static bool recover_and_get_state(struct ao *ao, struct mp_pcm_state *state)
     // (where things were retried in a loop).
     for (int n = 0; n < 10; n++) {
         err = snd_pcm_status(p->alsa, st);
-        CHECK_ALSA_ERROR("snd_pcm_status");
+        if (err == -EPIPE) {
+            // ALSA APIs can return -EPIPE when an XRUN happens,
+            // we skip right to handling it by setting pcmst
+            // manually.
+            pcmst = SND_PCM_STATE_XRUN;
+        } else {
+            // Otherwise do error checking and query the PCM state properly.
+            CHECK_ALSA_ERROR("snd_pcm_status");
 
-        pcmst = snd_pcm_status_get_state(st);
+            pcmst = snd_pcm_status_get_state(st);
+        }
+
         if (pcmst == SND_PCM_STATE_PREPARED ||
             pcmst == SND_PCM_STATE_RUNNING ||
             pcmst == SND_PCM_STATE_PAUSED)
@@ -984,29 +992,29 @@ static bool recover_and_get_state(struct ao *ao, struct mp_pcm_state *state)
                 ao_request_reload(ao);
                 p->device_lost = true;
             }
-            return false;
+            goto alsa_error;
         }
     }
 
     if (!state_ok) {
         MP_ERR(ao, "could not recover\n");
-        return false;
     }
 
+alsa_error:
+
     if (state) {
-        snd_pcm_sframes_t del = snd_pcm_status_get_delay(st);
+        snd_pcm_sframes_t del = state_ok ? snd_pcm_status_get_delay(st) : 0;
         state->delay = MPMAX(del, 0) / (double)ao->samplerate;
-        state->free_samples = snd_pcm_status_get_avail(st);
+        state->free_samples = state_ok ? snd_pcm_status_get_avail(st) : 0;
         state->free_samples = MPCLAMP(state->free_samples, 0, ao->device_buffer);
+        // Align to period size.
+        state->free_samples = state->free_samples / p->outburst * p->outburst;
         state->queued_samples = ao->device_buffer - state->free_samples;
         state->playing = pcmst == SND_PCM_STATE_RUNNING ||
                          pcmst == SND_PCM_STATE_PAUSED;
     }
 
-    return true;
-
-alsa_error:
-    return false;
+    return state_ok;
 }
 
 static void audio_get_state(struct ao *ao, struct mp_pcm_state *state)
@@ -1084,8 +1092,10 @@ static bool audio_write(struct ao *ao, void **data, int samples)
     }
 
     CHECK_ALSA_ERROR("pcm write error");
-    if (err != samples)
-        MP_WARN(ao, "unexpected short write\n");
+    if (err >= 0 && err != samples) {
+        MP_ERR(ao, "unexpected partial write (%d of %d frames), dropping audio\n",
+               (int)err, samples);
+    }
 
     return true;
 

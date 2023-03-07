@@ -145,9 +145,11 @@ struct mp_colorspace {
 
 // For many colorspace conversions, in particular those involving HDR, an
 // implicit reference white level is needed. Since this magic constant shows up
-// a lot, give it an explicit name. The value of 100 cd/m² comes from ITU-R
-// documents such as ITU-R BT.2100
-#define MP_REF_WHITE 100.0
+// a lot, give it an explicit name. The value of 203 cd/m² comes from ITU-R
+// Report BT.2408, and the value for HLG comes from the cited HLG 75% level
+// (transferred to scene space).
+#define MP_REF_WHITE 203.0
+#define MP_REF_WHITE_HLG 3.17955
 
 // Replaces unknown values in the first struct by those of the second struct
 void mp_colorspace_merge(struct mp_colorspace *orig, struct mp_colorspace *new);
@@ -184,6 +186,7 @@ bool mp_colorspace_equal(struct mp_colorspace c1, struct mp_colorspace c2);
 
 enum mp_chroma_location {
     MP_CHROMA_AUTO,
+    MP_CHROMA_TOPLEFT,  // uhd
     MP_CHROMA_LEFT,     // mpeg2/4, h264
     MP_CHROMA_CENTER,   // mpeg1, jpeg
     MP_CHROMA_COUNT,

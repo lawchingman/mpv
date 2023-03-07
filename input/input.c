@@ -122,6 +122,7 @@ struct input_ctx {
 
     // Mouse position on the consumer side (as command.c sees it)
     int mouse_x, mouse_y;
+    int mouse_hover;  // updated on mouse-enter/leave
     char *mouse_section; // last section to receive mouse event
 
     // Mouse position on the producer side (as the VO sees it)
@@ -175,6 +176,7 @@ struct input_opts {
     int use_gamepad;
     int use_media_keys;
     int default_bindings;
+    int builtin_bindings;
     int enable_mouse_movements;
     int vo_key_input;
     int test;
@@ -189,6 +191,7 @@ const struct m_sub_options input_config = {
         {"input-keylist", OPT_PRINT(mp_print_key_list)},
         {"input-cmdlist", OPT_PRINT(mp_print_cmd_list)},
         {"input-default-bindings", OPT_FLAG(default_bindings)},
+        {"input-builtin-bindings", OPT_FLAG(builtin_bindings)},
         {"input-test", OPT_FLAG(test)},
         {"input-doubleclick-time", OPT_INT(doubleclick_time),
          M_RANGE(0, 1000)},
@@ -217,6 +220,7 @@ const struct m_sub_options input_config = {
         .enable_mouse_movements = 1,
         .use_media_keys = 1,
         .default_bindings = 1,
+        .builtin_bindings = 1,
         .vo_key_input = 1,
         .allow_win_drag = 1,
     },
@@ -719,8 +723,13 @@ static void mp_input_feed_key(struct input_ctx *ictx, int code, double scale,
     if (!opts->enable_mouse_movements && MP_KEY_IS_MOUSE(unmod) && !force_mouse)
         return;
     if (unmod == MP_KEY_MOUSE_LEAVE || unmod == MP_KEY_MOUSE_ENTER) {
+        ictx->mouse_hover = unmod == MP_KEY_MOUSE_ENTER;
         update_mouse_section(ictx);
-        mp_input_queue_cmd(ictx, get_cmd_from_keys(ictx, NULL, code));
+
+        mp_cmd_t *cmd = get_cmd_from_keys(ictx, NULL, code);
+        if (!cmd)  // queue dummy cmd so that mouse-pos can notify observers
+            cmd = mp_input_parse_cmd(ictx, bstr0("ignore"), "<internal>");
+        mp_input_queue_cmd(ictx, cmd);
         return;
     }
     double now = mp_time_sec();
@@ -962,11 +971,12 @@ mp_cmd_t *mp_input_read_cmd(struct input_ctx *ictx)
     return ret;
 }
 
-void mp_input_get_mouse_pos(struct input_ctx *ictx, int *x, int *y)
+void mp_input_get_mouse_pos(struct input_ctx *ictx, int *x, int *y, int *hover)
 {
     input_lock(ictx);
     *x = ictx->mouse_x;
     *y = ictx->mouse_y;
+    *hover = ictx->mouse_hover;
     input_unlock(ictx);
 }
 
@@ -1360,7 +1370,7 @@ void mp_input_load_config(struct input_ctx *ictx)
     // "Uncomment" the default key bindings in etc/input.conf and add them.
     // All lines that do not start with '# ' are parsed.
     bstr builtin = bstr0(builtin_input_conf);
-    while (builtin.len) {
+    while (ictx->opts->builtin_bindings && builtin.len) {
         bstr line = bstr_getline(builtin, &builtin);
         bstr_eatstart0(&line, "#");
         if (!bstr_startswith0(line, " "))

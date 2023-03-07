@@ -63,7 +63,7 @@ static void create_ass_renderer(struct osd_state *osd, struct ass_state *ass)
 
     mp_ass_configure_fonts(ass->render, osd->opts->osd_style,
                            osd->global, ass->log);
-    ass_set_aspect_ratio(ass->render, 1.0, 1.0);
+    ass_set_pixel_aspect(ass->render, 1.0);
 }
 
 static void destroy_ass_renderer(struct ass_state *ass)
@@ -132,7 +132,10 @@ static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
     track->Timer = 100.;
     track->WrapStyle = 1; // end-of-line wrapping instead of smart wrapping
     track->Kerning = true;
-
+    track->ScaledBorderAndShadow = true;
+#if LIBASS_VERSION >= 0x01600010
+    ass_track_set_feature(track, ASS_FEATURE_WRAP_UNICODE, 1);
+#endif
     update_playres(ass, &obj->vo_res);
 }
 
@@ -366,6 +369,14 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
 
     mp_ass_set_style(style, track->PlayResY, opts->osd_style);
 
+    if (osd->opts->osd_style->back_color.a) {
+        // override the default osd opaque-box into plain outline. Otherwise
+        // the opaque box is not aligned with the bar (even without shadow),
+        // and each bar ass event gets its own opaque box - breaking the bar.
+        style->BackColour = MP_ASS_COLOR(opts->osd_style->shadow_color);
+        style->BorderStyle = 1; // outline
+    }
+
     *o_w = track->PlayResX * (opts->osd_bar_w / 100.0);
     *o_h = track->PlayResY * (opts->osd_bar_h / 100.0);
 
@@ -415,6 +426,22 @@ static void update_progbar(struct osd_state *osd, struct osd_object *obj)
     talloc_free(buf.start);
 
     struct ass_draw *d = &(struct ass_draw) { .scale = 4 };
+
+    if (osd->opts->osd_style->back_color.a) {
+        // the bar style always ignores the --osd-back-color config - it messes
+        // up the bar. draw an artificial box at the original back color.
+        struct m_color bc = osd->opts->osd_style->back_color;
+        d->text = talloc_asprintf_append(d->text,
+            "{\\pos(%f,%f)\\bord0\\1a&H%02X\\1c&H%02X%02X%02X&}",
+             px, py, 255 - bc.a, (int)bc.b, (int)bc.g, (int)bc.r);
+
+        ass_draw_start(d);
+        ass_draw_rect_cw(d, -border, -border, width + border, height + border);
+        ass_draw_stop(d);
+        add_osd_ass_event(track, "progbar", d->text);
+        ass_draw_reset(d);
+    }
+
     // filled area
     d->text = talloc_asprintf_append(d->text, "{\\bord0\\pos(%f,%f)}", px, py);
     ass_draw_start(d);
@@ -621,7 +648,7 @@ static void append_ass(struct ass_state *ass, struct mp_osd_res *res,
     update_playres(ass, res);
 
     ass_set_frame_size(ass->render, res->w, res->h);
-    ass_set_aspect_ratio(ass->render, res->display_par, 1.0);
+    ass_set_pixel_aspect(ass->render, res->display_par);
 
     int ass_changed;
     *img_list = ass_render_frame(ass->render, ass->track, 0, &ass_changed);

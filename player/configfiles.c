@@ -37,6 +37,7 @@
 #include "misc/ctype.h"
 #include "options/path.h"
 #include "options/m_config.h"
+#include "options/m_config_frontend.h"
 #include "options/parse_configfile.h"
 #include "common/playlist.h"
 #include "options/options.h"
@@ -65,7 +66,16 @@ void mp_parse_cfgfiles(struct MPContext *mpctx)
 
     mp_mk_config_dir(mpctx->global, "");
 
-    m_config_t *conf = mpctx->mconfig;
+    char *p1 = mp_get_user_path(NULL, mpctx->global, "~~home/");
+    char *p2 = mp_get_user_path(NULL, mpctx->global, "~~old_home/");
+    if (strcmp(p1, p2) != 0 && mp_path_exists(p2)) {
+        MP_WARN(mpctx, "Warning, two config dirs found:\n   %s (main)\n"
+                "   %s (bogus)\nYou should merge or delete the second one.\n",
+                p1, p2);
+    }
+    talloc_free(p1);
+    talloc_free(p2);
+
     char *section = NULL;
     bool encoding = opts->encode_opts &&
         opts->encode_opts->file && opts->encode_opts->file[0];
@@ -81,7 +91,7 @@ void mp_parse_cfgfiles(struct MPContext *mpctx)
     load_all_cfgfiles(mpctx, section, "mpv.conf|config");
 
     if (encoding)
-        m_config_set_profile(conf, SECT_ENCODE, 0);
+        m_config_set_profile(mpctx->mconfig, SECT_ENCODE, 0);
 }
 
 static int try_load_config(struct MPContext *mpctx, const char *file, int flags,
@@ -228,63 +238,6 @@ exit:
     return res;
 }
 
-static const char *const backup_properties[] = {
-    "osd-level",
-    //"loop",
-    "speed",
-    "options/edition",
-    "pause",
-    "volume",
-    "mute",
-    "audio-delay",
-    //"balance",
-    "fullscreen",
-    "ontop",
-    "border",
-    "gamma",
-    "brightness",
-    "contrast",
-    "saturation",
-    "hue",
-    "options/deinterlace",
-    "vf",
-    "af",
-    "panscan",
-    "options/aid",
-    "options/vid",
-    "options/sid",
-    "sub-delay",
-    "sub-speed",
-    "sub-pos",
-    "sub-visibility",
-    "sub-scale",
-    "sub-use-margins",
-    "sub-ass-force-margins",
-    "sub-ass-vsfilter-aspect-compat",
-    "sub-style-override",
-    "ab-loop-a",
-    "ab-loop-b",
-    "options/video-aspect-override",
-    0
-};
-
-// Used to retrieve default settings, which should not be stored in the
-// resume config. Uses backup_properties[] meaning/order of values.
-// This explicitly includes values set by config files and command line.
-void mp_get_resume_defaults(struct MPContext *mpctx)
-{
-    char **list =
-        talloc_zero_array(mpctx, char*, MP_ARRAY_SIZE(backup_properties));
-    for (int i = 0; backup_properties[i]; i++) {
-        const char *pname = backup_properties[i];
-        char *val = NULL;
-        int r = mp_property_do(pname, M_PROPERTY_GET_STRING, &val, mpctx);
-        if (r == M_PROPERTY_OK)
-            list[i] = talloc_steal(list, val);
-    }
-    mpctx->resume_defaults = list;
-}
-
 // Should follow what parser-cfg.c does/needs
 static bool needs_config_quoting(const char *s)
 {
@@ -359,25 +312,21 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
     } else {
         fprintf(file, "start=%f\n", pos);
     }
-    for (int i = 0; backup_properties[i]; i++) {
-        const char *pname = backup_properties[i];
-        char *val = NULL;
-        int r = mp_property_do(pname, M_PROPERTY_GET_STRING, &val, mpctx);
-        if (r == M_PROPERTY_OK) {
-            if (strncmp(pname, "options/", 8) == 0)
-                pname += 8;
-            // Only store it if it's different from the initial value.
-            char *prev = mpctx->resume_defaults[i];
-            if (!prev || strcmp(prev, val) != 0) {
-                if (needs_config_quoting(val)) {
-                    // e.g. '%6%STRING'
-                    fprintf(file, "%s=%%%d%%%s\n", pname, (int)strlen(val), val);
-                } else {
-                    fprintf(file, "%s=%s\n", pname, val);
-                }
+    char **watch_later_options = mpctx->opts->watch_later_options;
+    for (int i = 0; watch_later_options && watch_later_options[i]; i++) {
+        char *pname = watch_later_options[i];
+        // Only store it if it's different from the initial value.
+        if (m_config_watch_later_backup_opt_changed(mpctx->mconfig, pname)) {
+            char *val = NULL;
+            mp_property_do(pname, M_PROPERTY_GET_STRING, &val, mpctx);
+            if (needs_config_quoting(val)) {
+                // e.g. '%6%STRING'
+                fprintf(file, "%s=%%%d%%%s\n", pname, (int)strlen(val), val);
+            } else {
+                fprintf(file, "%s=%s\n", pname, val);
             }
+            talloc_free(val);
         }
-        talloc_free(val);
     }
     fclose(file);
 
@@ -422,6 +371,23 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
 
 exit:
     talloc_free(conffile);
+}
+
+void mp_delete_watch_later_conf(struct MPContext *mpctx, const char *file)
+{
+    if (!file) {
+        struct playlist_entry *cur = mpctx->playing;
+        if (!cur)
+            return;
+        file = cur->filename;
+        if (!file)
+            return;
+    }
+
+    char *fname = mp_get_playback_resume_config_filename(mpctx, file);
+    if (fname)
+        unlink(fname);
+    talloc_free(fname);
 }
 
 void mp_load_playback_resume(struct MPContext *mpctx, const char *file)

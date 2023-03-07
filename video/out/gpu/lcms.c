@@ -54,50 +54,6 @@ struct gl_lcms {
     struct mp_icc_opts *opts;
 };
 
-static bool parse_3dlut_size(const char *arg, int *p1, int *p2, int *p3)
-{
-    if (sscanf(arg, "%dx%dx%d", p1, p2, p3) != 3)
-        return false;
-    for (int n = 0; n < 3; n++) {
-        int s = ((int[]) { *p1, *p2, *p3 })[n];
-        if (s < 2 || s > 512)
-            return false;
-    }
-    return true;
-}
-
-static int validate_3dlut_size_opt(struct mp_log *log, const m_option_t *opt,
-                                   struct bstr name, struct bstr param)
-{
-    int p1, p2, p3;
-    char s[20];
-    snprintf(s, sizeof(s), "%.*s", BSTR_P(param));
-    return parse_3dlut_size(s, &p1, &p2, &p3);
-}
-
-#define OPT_BASE_STRUCT struct mp_icc_opts
-const struct m_sub_options mp_icc_conf = {
-    .opts = (const m_option_t[]) {
-        {"use-embedded-icc-profile", OPT_FLAG(use_embedded)},
-        {"icc-profile", OPT_STRING(profile), .flags = M_OPT_FILE},
-        {"icc-profile-auto", OPT_FLAG(profile_auto)},
-        {"icc-cache-dir", OPT_STRING(cache_dir), .flags = M_OPT_FILE},
-        {"icc-intent", OPT_INT(intent)},
-        {"icc-contrast", OPT_CHOICE(contrast, {"inf", -1}),
-            M_RANGE(0, 1000000)},
-        {"icc-3dlut-size", OPT_STRING_VALIDATE(size_str, validate_3dlut_size_opt)},
-        {"3dlut-size", OPT_REPLACED("icc-3dlut-size")},
-        {"icc-cache", OPT_REMOVED("see icc-cache-dir")},
-        {0}
-    },
-    .size = sizeof(struct mp_icc_opts),
-    .defaults = &(const struct mp_icc_opts) {
-        .size_str = "64x64x64",
-        .intent = INTENT_RELATIVE_COLORIMETRIC,
-        .use_embedded = true,
-    },
-};
-
 static void lcms2_error_handler(cmsContext ctx, cmsUInt32Number code,
                                 const char *msg)
 {
@@ -271,48 +227,46 @@ static cmsHPROFILE get_vid_profile(struct gl_lcms *p, cmsContext cms,
         break;
 
     case MP_CSP_TRC_BT_1886: {
-        // To build an appropriate BT.1886 transformation we need access to
-        // the display's black point, so we LittleCMS' detection function.
-        // Relative colorimetric is used since we want to approximate the
-        // BT.1886 to the target device's actual black point even in e.g.
-        // perceptual mode
-        const int intent = MP_INTENT_RELATIVE_COLORIMETRIC;
-        cmsCIEXYZ bp_XYZ;
-        if (!cmsDetectBlackPoint(&bp_XYZ, disp_profile, intent, 0))
-            return false;
-
-        // Map this XYZ value back into the (linear) source space
-        cmsToneCurve *linear = cmsBuildGamma(cms, 1.0);
-        cmsHPROFILE rev_profile = cmsCreateRGBProfileTHR(cms, &wp_xyY, &prim_xyY,
-                (cmsToneCurve*[3]){linear, linear, linear});
-        cmsHPROFILE xyz_profile = cmsCreateXYZProfile();
-        cmsHTRANSFORM xyz2src = cmsCreateTransformTHR(cms,
-                xyz_profile, TYPE_XYZ_DBL, rev_profile, TYPE_RGB_DBL,
-                intent, 0);
-        cmsFreeToneCurve(linear);
-        cmsCloseProfile(rev_profile);
-        cmsCloseProfile(xyz_profile);
-        if (!xyz2src)
-            return false;
-
         double src_black[3];
-        cmsDoTransform(xyz2src, &bp_XYZ, src_black, 1);
-        cmsDeleteTransform(xyz2src);
-
-        // Contrast limiting
-        if (p->opts->contrast > 0) {
+        if (p->opts->contrast < 0) {
+            // User requested infinite contrast, return 2.4 profile
+            tonecurve[0] = cmsBuildGamma(cms, 2.4);
+            break;
+        } else if (p->opts->contrast > 0) {
+            MP_VERBOSE(p, "Using specified contrast: %d\n", p->opts->contrast);
             for (int i = 0; i < 3; i++)
-                src_black[i] = MPMAX(src_black[i], 1.0 / p->opts->contrast);
-        }
+                src_black[i] = 1.0 / p->opts->contrast;
+        } else {
+            // To build an appropriate BT.1886 transformation we need access to
+            // the display's black point, so we use LittleCMS' detection
+            // function. Relative colorimetric is used since we want to
+            // approximate the BT.1886 to the target device's actual black
+            // point even in e.g. perceptual mode
+            const int intent = MP_INTENT_RELATIVE_COLORIMETRIC;
+            cmsCIEXYZ bp_XYZ;
+            if (!cmsDetectBlackPoint(&bp_XYZ, disp_profile, intent, 0))
+                return false;
 
-        // Built-in contrast failsafe
-        double contrast = 3.0 / (src_black[0] + src_black[1] + src_black[2]);
-        MP_VERBOSE(p, "Detected ICC profile contrast: %f\n", contrast);
-        if (contrast > 100000 && !p->opts->contrast) {
-            MP_WARN(p, "ICC profile detected contrast very high (>100000),"
-                    " falling back to contrast 1000 for sanity. Set the"
-                    " icc-contrast option to silence this warning.\n");
-            src_black[0] = src_black[1] = src_black[2] = 1.0 / 1000;
+            // Map this XYZ value back into the (linear) source space
+            cmsHPROFILE rev_profile;
+            cmsToneCurve *linear = cmsBuildGamma(cms, 1.0);
+            rev_profile = cmsCreateRGBProfileTHR(cms, &wp_xyY, &prim_xyY,
+                    (cmsToneCurve*[3]){linear, linear, linear});
+            cmsHPROFILE xyz_profile = cmsCreateXYZProfile();
+            cmsHTRANSFORM xyz2src = cmsCreateTransformTHR(cms,
+                    xyz_profile, TYPE_XYZ_DBL, rev_profile, TYPE_RGB_DBL,
+                    intent, cmsFLAGS_NOCACHE | cmsFLAGS_NOOPTIMIZE);
+            cmsFreeToneCurve(linear);
+            cmsCloseProfile(rev_profile);
+            cmsCloseProfile(xyz_profile);
+            if (!xyz2src)
+                return false;
+
+            cmsDoTransform(xyz2src, &bp_XYZ, src_black, 1);
+            cmsDeleteTransform(xyz2src);
+
+            double contrast = 3.0 / (src_black[0] + src_black[1] + src_black[2]);
+            MP_VERBOSE(p, "Detected ICC profile contrast: %f\n", contrast);
         }
 
         // Build the parametric BT.1886 transfer curve, one per channel
@@ -367,7 +321,7 @@ bool gl_lcms_get_lut3d(struct gl_lcms *p, struct lut3d **result_lut3d,
             abort();
     }
 
-    if (!parse_3dlut_size(p->opts->size_str, &s_r, &s_g, &s_b))
+    if (!gl_parse_3dlut_size(p->opts->size_str, &s_r, &s_g, &s_b))
         return false;
 
     if (!gl_lcms_has_profile(p))
@@ -441,7 +395,8 @@ bool gl_lcms_get_lut3d(struct gl_lcms *p, struct lut3d **result_lut3d,
     cmsHTRANSFORM trafo = cmsCreateTransformTHR(cms, vid_hprofile, TYPE_RGB_16,
                                                 profile, TYPE_RGBA_16,
                                                 p->opts->intent,
-                                                cmsFLAGS_HIGHRESPRECALC |
+                                                cmsFLAGS_NOCACHE |
+                                                cmsFLAGS_NOOPTIMIZE |
                                                 cmsFLAGS_BLACKPOINTCOMPENSATION);
     cmsCloseProfile(profile);
     cmsCloseProfile(vid_hprofile);
@@ -498,12 +453,6 @@ error_exit:
 
 #else /* HAVE_LCMS2 */
 
-const struct m_sub_options mp_icc_conf = {
-    .opts = (const m_option_t[]) { {0} },
-    .size = sizeof(struct mp_icc_opts),
-    .defaults = &(const struct mp_icc_opts) {0},
-};
-
 struct gl_lcms *gl_lcms_init(void *talloc_ctx, struct mp_log *log,
                              struct mpv_global *global,
                              struct mp_icc_opts *opts)
@@ -533,3 +482,34 @@ bool gl_lcms_get_lut3d(struct gl_lcms *p, struct lut3d **result_lut3d,
 }
 
 #endif
+
+static int validate_3dlut_size_opt(struct mp_log *log, const m_option_t *opt,
+                                   struct bstr name, const char **value)
+{
+    int p1, p2, p3;
+    return gl_parse_3dlut_size(*value, &p1, &p2, &p3) ? 0 : M_OPT_INVALID;
+}
+
+#define OPT_BASE_STRUCT struct mp_icc_opts
+const struct m_sub_options mp_icc_conf = {
+    .opts = (const m_option_t[]) {
+        {"use-embedded-icc-profile", OPT_FLAG(use_embedded)},
+        {"icc-profile", OPT_STRING(profile), .flags = M_OPT_FILE},
+        {"icc-profile-auto", OPT_FLAG(profile_auto)},
+        {"icc-cache-dir", OPT_STRING(cache_dir), .flags = M_OPT_FILE},
+        {"icc-intent", OPT_INT(intent)},
+        {"icc-force-contrast", OPT_CHOICE(contrast, {"no", 0}, {"inf", -1}),
+            M_RANGE(0, 1000000)},
+        {"icc-3dlut-size", OPT_STRING_VALIDATE(size_str, validate_3dlut_size_opt)},
+        {"3dlut-size", OPT_REPLACED("icc-3dlut-size")},
+        {"icc-cache", OPT_REMOVED("see icc-cache-dir")},
+        {"icc-contrast", OPT_REMOVED("see icc-force-contrast")},
+        {0}
+    },
+    .size = sizeof(struct mp_icc_opts),
+    .defaults = &(const struct mp_icc_opts) {
+        .size_str = "64x64x64",
+        .intent = MP_INTENT_RELATIVE_COLORIMETRIC,
+        .use_embedded = true,
+    },
+};

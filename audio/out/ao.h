@@ -35,6 +35,8 @@ enum aocontrol {
     AOCONTROL_SET_MUTE,
     // Has char* as argument, which contains the desired stream title.
     AOCONTROL_UPDATE_STREAM_TITLE,
+    // Has enum aocontrol_media_role* argument, which contains the current media role
+    AOCONTROL_UPDATE_MEDIA_ROLE,
 };
 
 // If set, then the queued audio data is the last. Note that after a while, new
@@ -45,7 +47,6 @@ enum {
     AO_EVENT_RELOAD = 1,
     AO_EVENT_HOTPLUG = 2,
     AO_EVENT_INITIAL_UNBLOCK = 4,
-    AO_EVENT_UNDERRUN = 8,
 };
 
 enum {
@@ -64,6 +65,11 @@ typedef struct ao_control_vol {
     float left;
     float right;
 } ao_control_vol_t;
+
+enum aocontrol_media_role {
+    AOCONTROL_MEDIA_ROLE_MUSIC,
+    AOCONTROL_MEDIA_ROLE_MOVIE,
+};
 
 struct ao_device_desc {
     const char *name;   // symbolic name; will be set on ao->device
@@ -98,16 +104,16 @@ void ao_get_format(struct ao *ao,
 const char *ao_get_name(struct ao *ao);
 const char *ao_get_description(struct ao *ao);
 bool ao_untimed(struct ao *ao);
-int ao_play(struct ao *ao, void **data, int samples, int flags);
 int ao_control(struct ao *ao, enum aocontrol cmd, void *arg);
 void ao_set_gain(struct ao *ao, float gain);
 double ao_get_delay(struct ao *ao);
-int ao_get_space(struct ao *ao);
 void ao_reset(struct ao *ao);
-void ao_pause(struct ao *ao);
-void ao_resume(struct ao *ao);
+void ao_start(struct ao *ao);
+void ao_set_paused(struct ao *ao, bool paused);
 void ao_drain(struct ao *ao);
-bool ao_eof_reached(struct ao *ao);
+bool ao_is_playing(struct ao *ao);
+struct mp_async_queue;
+struct mp_async_queue *ao_get_queue(struct ao *ao);
 int ao_query_and_reset_events(struct ao *ao, int events);
 int ao_add_events(struct ao *ao, int events);
 void ao_unblock(struct ao *ao);
@@ -120,8 +126,8 @@ struct ao_hotplug *ao_hotplug_create(struct mpv_global *global,
                                      void *wakeup_ctx);
 void ao_hotplug_destroy(struct ao_hotplug *hp);
 bool ao_hotplug_check_update(struct ao_hotplug *hp);
-struct ao_device_list *ao_hotplug_get_device_list(struct ao_hotplug *hp);
+struct ao_device_list *ao_hotplug_get_device_list(struct ao_hotplug *hp, struct ao *playback_ao);
 
-void ao_print_devices(struct mpv_global *global, struct mp_log *log);
+void ao_print_devices(struct mpv_global *global, struct mp_log *log, struct ao *playback_ao);
 
 #endif /* MPLAYER_AUDIO_OUT_H */

@@ -88,7 +88,6 @@ struct vdpctx {
 
     int                                force_yuv;
     struct mp_vdpau_mixer             *video_mixer;
-    int                                deint;
     int                                pullup;
     float                              denoise;
     float                              sharpen;
@@ -347,7 +346,7 @@ static int win_x11_init_vdpau_flip_queue(struct vo *vo)
                         "vdp_presentation_queue_target_create_x11");
     }
 
-    /* Emperically this seems to be the first call which fails when we
+    /* Empirically this seems to be the first call which fails when we
      * try to reinit after preemption while the user is still switched
      * from X to a virtual terminal (creating the vdp_device initially
      * succeeds, as does creating the flip_target above). This is
@@ -479,7 +478,17 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     VdpStatus vdp_st;
 
     if (!check_preemption(vo))
-        return -1;
+    {
+        /*
+         * When prempted, leave the reconfig() immediately
+         * without reconfiguring the vo_window and without
+         * initializing the vdpau objects. When recovered
+         * from preemption, if there is a difference between
+         * the VD thread parameters and the VO thread parameters
+         * the reconfig() is triggered again.
+         */
+        return 0;
+    }
 
     VdpChromaType chroma_type = VDP_CHROMA_TYPE_420;
     mp_vdpau_get_format(params->imgfmt, &chroma_type, NULL);
@@ -587,7 +596,7 @@ static void generate_osd_part(struct vo *vo, struct sub_bitmaps *imgs)
     case SUBBITMAP_LIBASS:
         format = VDP_RGBA_FORMAT_A8;
         break;
-    case SUBBITMAP_RGBA:
+    case SUBBITMAP_BGRA:
         format = VDP_RGBA_FORMAT_B8G8R8A8;
         break;
     default:
@@ -678,7 +687,7 @@ static void draw_osd(struct vo *vo)
 
     bool formats[SUBBITMAP_COUNT] = {
         [SUBBITMAP_LIBASS] = vc->supports_a8,
-        [SUBBITMAP_RGBA] = true,
+        [SUBBITMAP_BGRA] = true,
     };
 
     double pts = vc->current_image ? vc->current_image->pts : 0;
@@ -1061,8 +1070,6 @@ static void checked_resize(struct vo *vo)
 
 static int control(struct vo *vo, uint32_t request, void *data)
 {
-    struct vdpctx *vc = vo->priv;
-
     check_preemption(vo);
 
     switch (request) {
@@ -1079,9 +1086,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
         if (!status_ok(vo))
             return false;
         *(struct mp_image **)data = get_window_screenshot(vo);
-        return true;
-    case VOCTRL_GET_PREF_DEINT:
-        *(int *)data = vc->deint;
         return true;
     }
 
@@ -1115,7 +1119,6 @@ const struct vo_driver video_out_vdpau = {
     .uninit = uninit,
     .priv_size = sizeof(struct vdpctx),
     .options = (const struct m_option []){
-        {"deint", OPT_INT(deint), M_RANGE(-4, 4)},
         {"chroma-deint", OPT_FLAG(chroma_deint), OPTDEF_INT(1)},
         {"pullup", OPT_FLAG(pullup)},
         {"denoise", OPT_FLOAT(denoise), M_RANGE(0, 1)},

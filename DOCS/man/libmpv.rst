@@ -10,9 +10,9 @@ Since libmpv merely allows access to underlying mechanisms that can control
 mpv, further documentation is spread over a few places:
 
 - https://github.com/mpv-player/mpv/blob/master/libmpv/client.h
-- http://mpv.io/manual/master/#options
-- http://mpv.io/manual/master/#list-of-input-commands
-- http://mpv.io/manual/master/#properties
+- https://mpv.io/manual/master/#options
+- https://mpv.io/manual/master/#list-of-input-commands
+- https://mpv.io/manual/master/#properties
 - https://github.com/mpv-player/mpv-examples/tree/master/libmpv
 
 C PLUGINS
@@ -21,8 +21,8 @@ C PLUGINS
 You can write C plugins for mpv. These use the libmpv API, although they do not
 use the libmpv library itself.
 
-Currently, they must be explicitly enabled at build time with
-``--enable-cplugins``. They are available on Linux/BSD platforms only.
+They are available on Linux/BSD platforms only and enabled by default if the
+compiler supports linking with the ``-rdynamic`` flag.
 
 C plugins location
 ------------------
@@ -64,7 +64,7 @@ Linkage to libmpv
 -----------------
 
 The current implementation requires that your plugins are **not** linked against
-libmpv. What your plugins uses are not symbols from a libmpv binary, but
+libmpv. What your plugins use are not symbols from a libmpv binary, but
 symbols from the mpv host binary.
 
 Examples

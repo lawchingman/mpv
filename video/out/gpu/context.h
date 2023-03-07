@@ -11,7 +11,11 @@ struct ra_ctx_opts {
     int want_alpha;      // create an alpha framebuffer if possible
     int debug;           // enable debugging layers/callbacks etc.
     bool probing;        // the backend was auto-probed
+    char *context_name;  // filter by `ra_ctx_fns.name`
+    char *context_type;  // filter by `ra_ctx_fns.type`
 };
+
+extern const struct m_sub_options ra_ctx_conf;
 
 struct ra_ctx {
     struct vo *vo;
@@ -32,6 +36,8 @@ struct ra_ctx_fns {
     const char *type; // API type (for --gpu-api)
     const char *name; // name (for --gpu-context)
 
+    bool hidden; // hide the ra_ctx from users
+
     // Resize the window, or create a new window if there isn't one yet.
     // Currently, there is an unfortunate interaction with ctx->vo, and
     // display size etc. are determined by it.
@@ -44,6 +50,7 @@ struct ra_ctx_fns {
     // optional.
     void (*wakeup)(struct ra_ctx *ctx);
     void (*wait_events)(struct ra_ctx *ctx, int64_t until_time_us);
+    void (*update_render_opts)(struct ra_ctx *ctx);
 
     // Initialize/destroy the 'struct ra' and possibly the underlying VO backend.
     // Not normally called by the user of the ra_ctx.
@@ -94,12 +101,8 @@ struct ra_swapchain_fns {
 
 // Create and destroy a ra_ctx. This also takes care of creating and destroying
 // the underlying `struct ra`, and perhaps the underlying VO backend.
-struct ra_ctx *ra_ctx_create(struct vo *vo, const char *context_type,
-                             const char *context_name, struct ra_ctx_opts opts);
+struct ra_ctx *ra_ctx_create(struct vo *vo, struct ra_ctx_opts opts);
 void ra_ctx_destroy(struct ra_ctx **ctx);
 
-struct m_option;
-int ra_ctx_validate_api(struct mp_log *log, const struct m_option *opt,
-                        struct bstr name, struct bstr param);
-int ra_ctx_validate_context(struct mp_log *log, const struct m_option *opt,
-                            struct bstr name, struct bstr param);
+// Special case of creating a ra_ctx while specifiying a specific context by name.
+struct ra_ctx *ra_ctx_create_by_name(struct vo *vo, const char *name);

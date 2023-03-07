@@ -34,13 +34,39 @@
 
 static const char *const sub_exts[] = {"utf", "utf8", "utf-8", "idx", "sub",
                                        "srt", "rt", "ssa", "ass", "mks", "vtt",
-                                       "sup", "scc", "smi", "lrc",
+                                       "sup", "scc", "smi", "lrc", "pgs",
                                        NULL};
 
 static const char *const audio_exts[] = {"mp3", "aac", "mka", "dts", "flac",
                                          "ogg", "m4a", "ac3", "opus", "wav",
-                                         "wv",
+                                         "wv", "eac3", "thd",
                                          NULL};
+
+static const char *const image_exts[] = {"jpg", "jpeg", "png", "gif", "bmp",
+                                         "webp", "jxl", "tiff", "tif",
+                                         NULL};
+
+// Stolen from: vlc/-/blob/master/modules/meta_engine/folder.c#L40
+// sorted by priority (descending)
+static const char *const cover_files[] = {
+    "AlbumArt.jpg",
+    "Album.jpg",
+    "cover.jpg",
+    "cover.png",
+    "front.jpg",
+    "front.png",
+
+    "AlbumArtSmall.jpg",
+    "Folder.jpg",
+    "Folder.png",
+    ".folder.png",
+    "thumb.jpg",
+
+    "front.bmp",
+    "front.gif",
+    "cover.gif",
+    NULL
+};
 
 static bool test_ext_list(bstr ext, const char *const *list)
 {
@@ -57,7 +83,19 @@ static int test_ext(bstr ext)
         return STREAM_SUB;
     if (test_ext_list(ext, audio_exts))
         return STREAM_AUDIO;
+    if (test_ext_list(ext, image_exts))
+        return STREAM_VIDEO;
     return -1;
+}
+
+static int test_cover_filename(bstr fname)
+{
+    for (int n = 0; cover_files[n]; n++) {
+        if (bstrcasecmp(bstr0(cover_files[n]), fname) == 0) {
+            return MP_ARRAY_SIZE(cover_files) - n;
+        }
+    }
+    return 0;
 }
 
 bool mp_might_be_subtitle_file(const char *filename)
@@ -170,6 +208,9 @@ static void append_dir_subtitles(struct mpv_global *global, struct MPOpts *opts,
             langs = opts->stream_lang[type];
             fuzz = opts->audiofile_auto;
             break;
+        case STREAM_VIDEO:
+            fuzz = opts->coverart_auto;
+            break;
         }
 
         if (fuzz < 0 || (limit_type >= 0 && limit_type != type))
@@ -205,12 +246,15 @@ static void append_dir_subtitles(struct mpv_global *global, struct MPOpts *opts,
         if (bstr_find(tmp_fname_trim, f_fname_trim) >= 0 && fuzz >= 1)
             prio |= 2; // contains the movie name
 
+        if (type == STREAM_VIDEO && opts->coverart_whitelist && prio == 0)
+            prio = test_cover_filename(dename);
+
         // doesn't contain the movie name
         // don't try in the mplayer subtitle directory
         if (!limit_fuzziness && fuzz >= 2)
             prio |= 1;
 
-        mp_dbg(log, "Potential external file: \"%s\"  Priority: %d\n",
+        mp_trace(log, "Potential external file: \"%s\"  Priority: %d\n",
                de->d_name, prio);
 
         if (prio) {

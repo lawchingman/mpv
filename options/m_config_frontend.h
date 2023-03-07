@@ -70,8 +70,12 @@ typedef struct m_config {
     struct m_profile *profiles;
     // Depth when recursively including profiles.
     int profile_depth;
+    // Temporary during profile application.
+    struct m_opt_backup **profile_backup_tmp;
+    int profile_backup_flags;
 
     struct m_opt_backup *backup_opts;
+    struct m_opt_backup *watch_later_backup_opts;
 
     bool use_profiles;
     bool is_toplevel;
@@ -131,9 +135,17 @@ void m_config_backup_opt(struct m_config *config, const char *opt);
 // Call m_config_backup_opt() on all options.
 void m_config_backup_all_opts(struct m_config *config);
 
+// Backup options on startup so that quit-watch-later can compare the current
+// values to their backups, and save them only if they have been changed.
+void m_config_backup_watch_later_opts(struct m_config *config);
+
 // Restore all options backed up with m_config_backup_opt(), and delete the
 // backups afterwards.
 void m_config_restore_backups(struct m_config *config);
+
+// Whether opt_name is different from its initial value.
+bool m_config_watch_later_backup_opt_changed(struct m_config *config,
+                                             char *opt_name);
 
 enum {
     M_SETOPT_PRE_PARSE_ONLY = 1,    // Silently ignore non-M_OPT_PRE_PARSE opt.
@@ -224,14 +236,6 @@ void m_config_finish_default_profile(struct m_config *config, int flags);
  */
 struct m_profile *m_config_add_profile(struct m_config *config, char *name);
 
-/*  Set the description of a profile.
- *  Used by the config file parser when defining a profile.
- *
- *  \param p The profile object.
- *  \param arg The profile's name.
- */
-void m_profile_set_desc(struct m_profile *p, bstr desc);
-
 /*  Add an option to a profile.
  *  Used by the config file parser when defining a profile.
  *
@@ -252,6 +256,9 @@ int m_config_set_profile_option(struct m_config *config, struct m_profile *p,
  * Returns error code (<0) or 0 on success
  */
 int m_config_set_profile(struct m_config *config, char *name, int flags);
+
+// Attempt to "unset" a profile if possible.
+int m_config_restore_profile(struct m_config *config, char *name);
 
 struct mpv_node m_config_get_profiles(struct m_config *config);
 

@@ -336,11 +336,34 @@ static int pctx_read_token(struct parse_ctx *ctx, bstr *out)
             return -1;
         }
         if (!bstr_eatstart0(&ctx->str, "\"")) {
-            MP_ERR(ctx, "Unterminated quotes: ...>%.*s<.\n", BSTR_P(start));
+            MP_ERR(ctx, "Unterminated double quote: ...>%.*s<.\n", BSTR_P(start));
             return -1;
         }
         return 1;
     }
+    if (bstr_eatstart0(&ctx->str, "'")) {
+        int next = bstrchr(ctx->str, '\'');
+        if (next < 0) {
+            MP_ERR(ctx, "Unterminated single quote: ...>%.*s<.\n", BSTR_P(start));
+            return -1;
+        }
+        *out = bstr_splice(ctx->str, 0, next);
+        ctx->str = bstr_cut(ctx->str, next+1);
+        return 1;
+    }
+    if (ctx->start.len > 1 && bstr_eatstart0(&ctx->str, "`")) {
+        char endquote[2] = {ctx->str.start[0], '`'};
+        ctx->str = bstr_cut(ctx->str, 1);
+        int next = bstr_find(ctx->str, (bstr){endquote, 2});
+        if (next < 0) {
+            MP_ERR(ctx, "Unterminated custom quote: ...>%.*s<.\n", BSTR_P(start));
+            return -1;
+        }
+        *out = bstr_splice(ctx->str, 0, next);
+        ctx->str = bstr_cut(ctx->str, next+2);
+        return 1;
+    }
+
     return read_token(ctx->str, &ctx->str, out) ? 1 : 0;
 }
 
@@ -585,8 +608,10 @@ void mp_cmd_dump(struct mp_log *log, int msgl, char *header, struct mp_cmd *cmd)
 
 bool mp_input_is_repeatable_cmd(struct mp_cmd *cmd)
 {
-    return (cmd->def->allow_auto_repeat) || cmd->def == &mp_cmd_list ||
-           (cmd->flags & MP_ALLOW_REPEAT);
+    if (cmd->def == &mp_cmd_list && cmd->args[0].v.p)
+        cmd = cmd->args[0].v.p;  // list - only 1st cmd is considered
+
+    return (cmd->def->allow_auto_repeat) || (cmd->flags & MP_ALLOW_REPEAT);
 }
 
 bool mp_input_is_scalable_cmd(struct mp_cmd *cmd)

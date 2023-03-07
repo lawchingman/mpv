@@ -1,12 +1,15 @@
 #include <math.h>
 #include <pthread.h>
 
+#include <libavutil/hwcontext.h>
+
 #include "common/common.h"
 #include "common/global.h"
 #include "common/msg.h"
 #include "osdep/atomic.h"
 #include "osdep/timer.h"
 #include "video/hwdec.h"
+#include "video/img_format.h"
 
 #include "filter.h"
 #include "filter_internal.h"
@@ -110,12 +113,12 @@ struct mp_filter_internal {
     struct mp_filter *error_handler;
 
     char *name;
+    bool high_priority;
 
     bool pending;
     bool async_pending;
     bool failed;
 };
-
 
 // Called when new work needs to be done on a pin belonging to the filter:
 //  - new data was requested
@@ -133,7 +136,11 @@ static void add_pending(struct mp_filter *f)
     // This should probably really be some sort of priority queue, but for now
     // something naive and dumb does the job too.
     f->in->pending = true;
-    MP_TARRAY_APPEND(r, r->pending, r->num_pending, f);
+    if (f->in->high_priority) {
+        MP_TARRAY_INSERT_AT(r, r->pending, r->num_pending, 0, f);
+    } else {
+        MP_TARRAY_APPEND(r, r->pending, r->num_pending, f);
+    }
 }
 
 static void add_pending_pin(struct mp_pin *p)
@@ -217,6 +224,8 @@ bool mp_filter_graph_run(struct mp_filter *filter)
 
     flush_async_notifications(r);
 
+    bool exit_req = false;
+
     while (1) {
         if (atomic_exchange_explicit(&r->interrupt_flag, false,
                                      memory_order_acq_rel))
@@ -226,7 +235,7 @@ bool mp_filter_graph_run(struct mp_filter *filter)
                 r->wakeup_cb(r->wakeup_ctx);
             r->async_wakeup_sent = true;
             pthread_mutex_unlock(&r->async_lock);
-            break;
+            exit_req = true;
         }
 
         if (!r->num_pending) {
@@ -235,10 +244,20 @@ bool mp_filter_graph_run(struct mp_filter *filter)
                 break;
         }
 
-        struct mp_filter *next = r->pending[r->num_pending - 1];
-        r->num_pending -= 1;
-        next->in->pending = false;
+        struct mp_filter *next = NULL;
 
+        if (r->pending[0]->in->high_priority) {
+            next = r->pending[0];
+            MP_TARRAY_REMOVE_AT(r->pending, r->num_pending, 0);
+        } else if (!exit_req) {
+            next = r->pending[r->num_pending - 1];
+            r->num_pending -= 1;
+        }
+
+        if (!next)
+            break;
+
+        next->in->pending = false;
         if (next->in->info->process)
             next->in->info->process(next);
 
@@ -356,7 +375,7 @@ static struct mp_pin *find_connected_end(struct mp_pin *p)
             return other;
         p = other->user_conn;
     }
-    assert(0);
+    MP_ASSERT_UNREACHABLE();
 }
 
 // With p being part of a connection, create the pin_connection and set all
@@ -381,7 +400,7 @@ static void init_connection(struct mp_pin *p)
     if (out->manual_connection)
         assert(out->manual_connection->in->runner == runner);
 
-    // Logicaly, the ends are always manual connections. A pin chain without
+    // Logically, the ends are always manual connections. A pin chain without
     // manual connections at the ends is still disconnected (or if this
     // attempted to extend an existing connection, becomes dangling and gets
     // disconnected).
@@ -510,6 +529,16 @@ enum mp_pin_dir mp_pin_get_dir(struct mp_pin *p)
 const char *mp_filter_get_name(struct mp_filter *f)
 {
     return f->in->name;
+}
+
+const struct mp_filter_info *mp_filter_get_info(struct mp_filter *f)
+{
+    return f->in->info;
+}
+
+void mp_filter_set_high_priority(struct mp_filter *f, bool pri)
+{
+    f->in->high_priority = pri;
 }
 
 void mp_filter_set_name(struct mp_filter *f, const char *name)
@@ -656,15 +685,19 @@ struct mp_stream_info *mp_filter_find_stream_info(struct mp_filter *f)
     return NULL;
 }
 
-struct AVBufferRef *mp_filter_load_hwdec_device(struct mp_filter *f, int avtype)
+struct mp_hwdec_ctx *mp_filter_load_hwdec_device(struct mp_filter *f, int imgfmt)
 {
     struct mp_stream_info *info = mp_filter_find_stream_info(f);
     if (!info || !info->hwdec_devs)
         return NULL;
 
-    hwdec_devices_request_all(info->hwdec_devs);
+    struct hwdec_imgfmt_request params = {
+        .imgfmt = imgfmt,
+        .probing = false,
+    };
+    hwdec_devices_request_for_img_fmt(info->hwdec_devs, &params);
 
-    return hwdec_devices_get_lavc(info->hwdec_devs, avtype);
+    return hwdec_devices_get_by_imgfmt(info->hwdec_devs, imgfmt);
 }
 
 static void filter_wakeup(struct mp_filter *f, bool mark_only)

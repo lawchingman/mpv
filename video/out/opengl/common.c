@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdbool.h>
 #include <math.h>
 #include <assert.h>
@@ -37,14 +38,26 @@
 static bool is_software_gl(GL *gl)
 {
     const char *renderer = gl->GetString(GL_RENDERER);
-    const char *vendor = gl->GetString(GL_VENDOR);
-    return !(renderer && vendor) ||
+    // Note we don't attempt to blacklist Microsoft's fallback implementation.
+    // It only provides OpenGL 1.1 and will be skipped anyway.
+    return !renderer ||
            strcmp(renderer, "Software Rasterizer") == 0 ||
            strstr(renderer, "llvmpipe") ||
            strstr(renderer, "softpipe") ||
-           strcmp(vendor, "Microsoft Corporation") == 0 ||
            strcmp(renderer, "Mesa X11") == 0 ||
            strcmp(renderer, "Apple Software Renderer") == 0;
+}
+
+// This guesses whether our DR path is fast or slow
+static bool is_fast_dr(GL *gl)
+{
+    const char *vendor = gl->GetString(GL_VENDOR);
+    if (!vendor)
+        return false;
+
+    return strcasecmp(vendor, "AMD") == 0 ||
+           strcasecmp(vendor, "NVIDIA Corporation") == 0 ||
+           strcasecmp(vendor, "ATI Technologies Inc.") == 0;    // AMD on Windows
 }
 
 static void GLAPIENTRY dummy_glBindFramebuffer(GLenum target, GLuint framebuffer)
@@ -143,6 +156,7 @@ static const struct gl_functions gl_functions[] = {
         .ver_core = 210,
         .provides = MPGL_CAP_ROW_LENGTH | MPGL_CAP_1D_TEX,
         .functions = (const struct gl_function[]) {
+            DEF_FN(DrawBuffer),
             DEF_FN(GetTexLevelParameteriv),
             DEF_FN(ReadBuffer),
             DEF_FN(TexImage1D),
@@ -307,6 +321,7 @@ static const struct gl_functions gl_functions[] = {
     },
     {
         .ver_core = 430,
+        .extension = "GL_ARB_invalidate_subdata",
         .functions = (const struct gl_function[]) {
             DEF_FN(InvalidateTexImage),
             {0}
@@ -338,8 +353,17 @@ static const struct gl_functions gl_functions[] = {
             {0}
         },
     },
+    // Equivalent extension for ES
+    {
+        .extension = "GL_EXT_buffer_storage",
+        .functions = (const struct gl_function[]) {
+            DEF_FN_NAME(BufferStorage, "glBufferStorageEXT"),
+            {0}
+        },
+    },
     {
         .ver_core = 420,
+        .ver_es_core = 310,
         .extension = "GL_ARB_shader_image_load_store",
         .functions = (const struct gl_function[]) {
             DEF_FN(BindImageTexture),
@@ -349,16 +373,19 @@ static const struct gl_functions gl_functions[] = {
     },
     {
         .ver_core = 310,
+        .ver_es_core = 300,
         .extension = "GL_ARB_uniform_buffer_object",
         .provides = MPGL_CAP_UBO,
     },
     {
         .ver_core = 430,
+        .ver_es_core = 310,
         .extension = "GL_ARB_shader_storage_buffer_object",
         .provides = MPGL_CAP_SSBO,
     },
     {
         .ver_core = 430,
+        .ver_es_core = 310,
         .extension = "GL_ARB_compute_shader",
         .functions = (const struct gl_function[]) {
             DEF_FN(DispatchCompute),
@@ -454,21 +481,14 @@ static const struct gl_functions gl_functions[] = {
             {0}
         },
     },
-    // These don't exist - they are for the sake of mpv internals, and libmpv
-    // interaction (see libmpv/opengl_cb.h).
-    // This is not used by the render API, only the deprecated opengl-cb API.
+    // ES version uses a different extension.
     {
-        .extension = "GL_MP_MPGetNativeDisplay",
+        .ver_es_core = 320,
+        .extension = "GL_KHR_debug",
+        .provides = MPGL_CAP_DEBUG,
         .functions = (const struct gl_function[]) {
-            DEF_FN(MPGetNativeDisplay),
-            {0}
-        },
-    },
-    // Same, but using the old name.
-    {
-        .extension = "GL_MP_D3D_interfaces",
-        .functions = (const struct gl_function[]) {
-            DEF_FN_NAME(MPGetNativeDisplay, "glMPGetD3DInterface"),
+            // (only functions needed by us)
+            DEF_FN(DebugMessageCallback),
             {0}
         },
     },
@@ -486,7 +506,6 @@ static const struct gl_functions gl_functions[] = {
 #undef DEF_FN
 #undef DEF_FN_NAME
 
-
 // Fill the GL struct with function pointers and extensions from the current
 // GL context. Called by the backend.
 // get_fn: function to resolve function names
@@ -498,6 +517,8 @@ void mpgl_load_functions2(GL *gl, void *(*get_fn)(void *ctx, const char *n),
     talloc_free(gl->extensions);
     *gl = (GL) {
         .extensions = talloc_strdup(gl, ext2 ? ext2 : ""),
+        .get_fn = get_fn,
+        .fn_ctx = fn_ctx,
     };
 
     gl->GetString = get_fn(fn_ctx, "glGetString");
@@ -627,7 +648,7 @@ void mpgl_load_functions2(GL *gl, void *(*get_fn)(void *ctx, const char *n),
         if (gl->es >= 200)
             gl->glsl_version = 100;
         if (gl->es >= 300)
-            gl->glsl_version = 300;
+            gl->glsl_version = gl->es;
     } else {
         gl->glsl_version = 120;
         int glsl_major = 0, glsl_minor = 0;
@@ -641,6 +662,9 @@ void mpgl_load_functions2(GL *gl, void *(*get_fn)(void *ctx, const char *n),
         gl->mpgl_caps |= MPGL_CAP_SW;
         mp_verbose(log, "Detected suspected software renderer.\n");
     }
+
+    if (!is_fast_dr(gl))
+        gl->mpgl_caps |= MPGL_CAP_SLOW_DR;
 
     // GL_ARB_compute_shader & GL_ARB_shader_image_load_store
     if (gl->DispatchCompute && gl->BindImageTexture)

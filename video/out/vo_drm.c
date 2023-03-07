@@ -45,7 +45,6 @@
 
 #define BYTES_PER_PIXEL 4
 #define BITS_PER_PIXEL 32
-#define USE_MASTER 0
 
 struct framebuffer {
     uint32_t width;
@@ -255,25 +254,19 @@ static void release_vt(void *data)
 {
     struct vo *vo = data;
     crtc_release(vo);
-    if (USE_MASTER) {
-        //this function enables support for switching to x, weston etc.
-        //however, for whatever reason, it can be called only by root users.
-        //until things change, this is commented.
-        struct priv *p = vo->priv;
-        if (drmDropMaster(p->kms->fd)) {
-            MP_WARN(vo, "Failed to drop DRM master: %s\n", mp_strerror(errno));
-        }
+
+    const struct priv *p = vo->priv;
+    if (drmDropMaster(p->kms->fd)) {
+        MP_WARN(vo, "Failed to drop DRM master: %s\n", mp_strerror(errno));
     }
 }
 
 static void acquire_vt(void *data)
 {
     struct vo *vo = data;
-    if (USE_MASTER) {
-        struct priv *p = vo->priv;
-        if (drmSetMaster(p->kms->fd)) {
-            MP_WARN(vo, "Failed to acquire DRM master: %s\n", mp_strerror(errno));
-        }
+    const struct priv *p = vo->priv;
+    if (drmSetMaster(p->kms->fd)) {
+        MP_WARN(vo, "Failed to acquire DRM master: %s\n", mp_strerror(errno));
     }
 
     crtc_setup(vo);
@@ -573,6 +566,7 @@ static int preinit(struct vo *vo)
     }
 
     p->kms = kms_create(vo->log,
+                        vo->opts->drm_opts->drm_device_path,
                         vo->opts->drm_opts->drm_connector_spec,
                         vo->opts->drm_opts->drm_mode_spec,
                         0, 0, false);
@@ -652,6 +646,11 @@ static int control(struct vo *vo, uint32_t request, void *arg)
         if (fps <= 0)
             break;
         *(double*)arg = fps;
+        return VO_TRUE;
+    }
+    case VOCTRL_GET_DISPLAY_RES: {
+        ((int *)arg)[0] = p->kms->mode.mode.hdisplay;
+        ((int *)arg)[1] = p->kms->mode.mode.vdisplay;
         return VO_TRUE;
     }
     case VOCTRL_PAUSE:

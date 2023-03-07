@@ -25,8 +25,10 @@ local opts = {
     -- have to be a monospaced font.
     font = "",
     -- Set the font size used for the REPL and the console. This will be
-    -- multiplied by "scale."
+    -- multiplied by "scale".
     font_size = 16,
+    -- Remove duplicate entries in history as to only keep the latest one.
+    history_dedup = true,
 }
 
 function detect_platform()
@@ -36,6 +38,8 @@ function detect_platform()
         return 'windows'
     elseif mp.get_property_native('options/macos-force-dedicated-gpu', o) ~= o then
         return 'macos'
+    elseif os.getenv('WAYLAND_DISPLAY') then
+        return 'wayland'
     end
     return 'x11'
 end
@@ -62,7 +66,8 @@ local history = {}
 local history_pos = 1
 local log_buffer = {}
 local key_bindings = {}
-local global_margin_y = 0
+local global_margin_top = 0
+local global_margin_bottom = 0
 
 local update_timer = nil
 update_timer = mp.add_periodic_timer(0.05, function()
@@ -82,9 +87,11 @@ utils.shared_script_property_observe("osc-margins", function(_, val)
         for v in string.gmatch(val, "[^,]+") do
             vals[#vals + 1] = tonumber(v)
         end
-        global_margin_y = vals[4] -- bottom
+        global_margin_top = vals[3] -- top
+        global_margin_bottom = vals[4] -- bottom
     else
-        global_margin_y = 0
+        global_margin_top = 0
+        global_margin_bottom = 0
     end
     update()
 end)
@@ -141,12 +148,16 @@ function update()
         return
     end
 
+    local coordinate_top = math.floor(global_margin_top * screeny + 0.5)
+    local clipping_coordinates = '0,' .. coordinate_top .. ',' ..
+                                 screenx .. ',' .. screeny
     local ass = assdraw.ass_new()
     local style = '{\\r' ..
                   '\\1a&H00&\\3a&H00&\\4a&H99&' ..
                   '\\1c&Heeeeee&\\3c&H111111&\\4c&H000000&' ..
                   '\\fn' .. opts.font .. '\\fs' .. opts.font_size ..
-                  '\\bord1\\xshad0\\yshad1\\fsp0\\q1}'
+                  '\\bord1\\xshad0\\yshad1\\fsp0\\q1' ..
+                  '\\clip(' .. clipping_coordinates .. ')}'
     -- Create the cursor glyph as an ASS drawing. ASS will draw the cursor
     -- inline with the surrounding text, but it sets the advance to the width
     -- of the drawing. So the cursor doesn't affect layout too much, make it as
@@ -166,7 +177,10 @@ function update()
     -- messages.
     local log_ass = ''
     local log_messages = #log_buffer
-    local log_max_lines = math.ceil(screeny / opts.font_size)
+    local screeny_factor = (1 - global_margin_top - global_margin_bottom)
+    -- subtract 1.5 to account for the input line
+    local log_max_lines = screeny * screeny_factor / opts.font_size - 1.5
+    log_max_lines = math.ceil(log_max_lines)
     if log_max_lines < log_messages then
         log_messages = log_max_lines
     end
@@ -176,7 +190,7 @@ function update()
 
     ass:new_event()
     ass:an(1)
-    ass:pos(2, screeny - 2 - global_margin_y * screeny)
+    ass:pos(2, screeny - 2 - global_margin_bottom * screeny)
     ass:append(log_ass .. '\\N')
     ass:append(style .. '> ' .. before_cur)
     ass:append(cglyph)
@@ -186,7 +200,7 @@ function update()
     -- cursor appear in front of the text.
     ass:new_event()
     ass:an(1)
-    ass:pos(2, screeny - 2)
+    ass:pos(2, screeny - 2 - global_margin_bottom * screeny)
     ass:append(style .. '{\\alpha&HFF&}> ' .. before_cur)
     ass:append(cglyph)
     ass:append(style .. '{\\alpha&HFF&}' .. after_cur)
@@ -214,16 +228,22 @@ end
 
 -- Show the repl if hidden and replace its contents with 'text'
 -- (script-message-to repl type)
-function show_and_type(text)
+function show_and_type(text, cursor_pos)
     text = text or ''
+    cursor_pos = tonumber(cursor_pos)
 
     -- Save the line currently being edited, just in case
     if line ~= text and line ~= '' and history[#history] ~= line then
-        history[#history + 1] = line
+        history_add(line)
     end
 
     line = text
-    cursor = line:len() + 1
+    if cursor_pos ~= nil and cursor_pos >= 1
+       and cursor_pos <= line:len() + 1 then
+        cursor = math.floor(cursor_pos)
+    else
+        cursor = line:len() + 1
+    end
     history_pos = #history + 1
     insert_mode = false
     if repl_active then
@@ -243,7 +263,7 @@ function next_utf8(str, pos)
     return pos
 end
 
--- As above, but finds the previous UTF-8 charcter in 'str' before 'pos'
+-- As above, but finds the previous UTF-8 character in 'str' before 'pos'
 function prev_utf8(str, pos)
     if pos <= 1 then return pos end
     repeat
@@ -252,7 +272,7 @@ function prev_utf8(str, pos)
     return pos
 end
 
--- Insert a character at the current cursor position (any_unicode, Shift+Enter)
+-- Insert a character at the current cursor position (any_unicode)
 function handle_char_input(c)
     if insert_mode then
         line = line:sub(1, cursor - 1) .. c .. line:sub(next_utf8(line, cursor))
@@ -305,10 +325,13 @@ function clear()
     update()
 end
 
--- Close the REPL if the current line is empty, otherwise do nothing (Ctrl+D)
+-- Close the REPL if the current line is empty, otherwise delete the next
+-- character (Ctrl+D)
 function maybe_exit()
     if line == '' then
         set_active(false)
+    else
+        handle_del()
     end
 end
 
@@ -353,13 +376,28 @@ function help_command(param)
     log_add('', output)
 end
 
+-- Add a line to the history and deduplicate
+function history_add(text)
+    if opts.history_dedup then
+        -- More recent entries are more likely to be repeated
+        for i = #history, 1, -1 do
+            if history[i] == text then
+                table.remove(history, i)
+                break
+            end
+        end
+    end
+
+    history[#history + 1] = text
+end
+
 -- Run the current command and clear the line (Enter)
 function handle_enter()
     if line == '' then
         return
     end
     if history[#history] ~= line then
-        history[#history + 1] = line
+        history_add(line)
     end
 
     -- match "help [<text>]", return <text> or "", strip all whitespace
@@ -395,7 +433,7 @@ function go_history(new_pos)
     -- entry. This makes it much less frustrating to accidentally hit Up/Down
     -- while editing a line.
     if old_pos == #history + 1 and line ~= '' and history[#history] ~= line then
-        history[#history + 1] = line
+        history_add(line)
     end
 
     -- Now show the history line (or a blank line for #history + 1)
@@ -563,7 +601,7 @@ function go_end()
     update()
 end
 
--- Delete from the cursor to the end of the word (Ctrl+W)
+-- Delete from the cursor to the beginning of the word (Ctrl+Backspace)
 function del_word()
     local before_cur = line:sub(1, cursor - 1)
     local after_cur = line:sub(cursor)
@@ -571,6 +609,18 @@ function del_word()
     before_cur = before_cur:gsub('[^%s]+%s*$', '', 1)
     line = before_cur .. after_cur
     cursor = before_cur:len() + 1
+    update()
+end
+
+-- Delete from the cursor to the end of the word (Ctrl+Del)
+function del_next_word()
+    if cursor > line:len() then return end
+
+    local before_cur = line:sub(1, cursor - 1)
+    local after_cur = line:sub(cursor)
+
+    after_cur = after_cur:gsub('^%s*[^%s]+', '', 1)
+    line = before_cur .. after_cur
     update()
 end
 
@@ -598,6 +648,14 @@ function get_clipboard(clip)
     if platform == 'x11' then
         local res = utils.subprocess({
             args = { 'xclip', '-selection', clip and 'clipboard' or 'primary', '-out' },
+            playback_only = false,
+        })
+        if not res.error then
+            return res.stdout
+        end
+    elseif platform == 'wayland' then
+        local res = utils.subprocess({
+            args = { 'wl-paste', clip and '-n' or  '-np' },
             playback_only = false,
         })
         if not res.error then
@@ -641,7 +699,7 @@ function get_clipboard(clip)
 end
 
 -- Paste text from the window-system's clipboard. 'clip' determines whether the
--- clipboard or the primary selection buffer is used (on X11 only.)
+-- clipboard or the primary selection buffer is used (on X11 and Wayland only.)
 function paste(clip)
     local text = get_clipboard(clip)
     local before_cur = line:sub(1, cursor - 1)
@@ -659,25 +717,37 @@ function get_bindings()
         { 'enter',       handle_enter                           },
         { 'kp_enter',    handle_enter                           },
         { 'shift+enter', function() handle_char_input('\n') end },
+        { 'ctrl+j',      handle_enter                           },
+        { 'ctrl+m',      handle_enter                           },
         { 'bs',          handle_backspace                       },
         { 'shift+bs',    handle_backspace                       },
+        { 'ctrl+h',      handle_backspace                       },
         { 'del',         handle_del                             },
         { 'shift+del',   handle_del                             },
         { 'ins',         handle_ins                             },
         { 'shift+ins',   function() paste(false) end            },
         { 'mbtn_mid',    function() paste(false) end            },
         { 'left',        function() prev_char() end             },
+        { 'ctrl+b',      function() prev_char() end             },
         { 'right',       function() next_char() end             },
+        { 'ctrl+f',      function() next_char() end             },
         { 'up',          function() move_history(-1) end        },
+        { 'ctrl+p',      function() move_history(-1) end        },
         { 'wheel_up',    function() move_history(-1) end        },
         { 'down',        function() move_history(1) end         },
+        { 'ctrl+n',      function() move_history(1) end         },
         { 'wheel_down',  function() move_history(1) end         },
         { 'wheel_left',  function() end                         },
         { 'wheel_right', function() end                         },
         { 'ctrl+left',   prev_word                              },
+        { 'alt+b',       prev_word                              },
         { 'ctrl+right',  next_word                              },
+        { 'alt+f',       next_word                              },
         { 'tab',         complete                               },
+        { 'ctrl+i',      complete                               },
+        { 'ctrl+a',      go_home                                },
         { 'home',        go_home                                },
+        { 'ctrl+e',      go_end                                 },
         { 'end',         go_end                                 },
         { 'pgup',        handle_pgup                            },
         { 'pgdwn',       handle_pgdown                          },
@@ -688,7 +758,10 @@ function get_bindings()
         { 'ctrl+u',      del_to_start                           },
         { 'ctrl+v',      function() paste(true) end             },
         { 'meta+v',      function() paste(true) end             },
+        { 'ctrl+bs',     del_word                               },
         { 'ctrl+w',      del_word                               },
+        { 'ctrl+del',    del_next_word                          },
+        { 'alt+d',       del_next_word                          },
         { 'kp_dec',      function() handle_char_input('.') end  },
     }
 
@@ -737,8 +810,8 @@ mp.add_key_binding(nil, 'enable', function()
 end)
 
 -- Add a script-message to show the REPL and fill it with the provided text
-mp.register_script_message('type', function(text)
-    show_and_type(text)
+mp.register_script_message('type', function(text, cursor_pos)
+    show_and_type(text, cursor_pos)
 end)
 
 -- Redraw the REPL when the OSD size changes. This is needed because the

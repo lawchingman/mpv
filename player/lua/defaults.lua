@@ -42,6 +42,11 @@ function mp.input_disable_section(section)
     mp.commandv("disable-section", section)
 end
 
+function mp.get_mouse_pos()
+    local m = mp.get_property_native("mouse-pos")
+    return m.x, m.y
+end
+
 -- For dispatching script-binding. This is sent as:
 --      script-message-to $script_name $binding_name $keystate
 -- The array is indexed by $binding_name, and has functions like this as value:
@@ -325,9 +330,11 @@ function mp.get_next_timeout()
     return timer.next_deadline - now
 end
 
--- Run timers that have met their deadline.
--- Return: next absolute time a timer expires as number, or nil if no timers
+-- Run timers that have met their deadline at the time of invocation.
+-- Return: time>0 in seconds till the next due timer, 0 if there are due timers
+--         (aborted to avoid infinite loop), or nil if no timers
 local function process_timers()
+    local t0 = nil
     while true do
         local timer = get_next_timer()
         if not timer then
@@ -338,6 +345,14 @@ local function process_timers()
         if wait > 0 then
             return wait
         else
+            if not t0 then
+                t0 = now  -- first due callback: always executes, remember t0
+            elseif timer.next_deadline > t0 then
+                -- don't block forever with slow callbacks and endless timers.
+                -- we'll continue right after checking mpv events.
+                return 0
+            end
+
             if timer.oneshot then
                 timer:kill()
             else
@@ -513,12 +528,20 @@ function mp.dispatch_events(allow_wait)
         local wait = 0
         if not more_events then
             wait = process_timers() or 1e20 -- infinity for all practical purposes
-            for _, handler in ipairs(idle_handlers) do
-                handler()
+            if wait ~= 0 then
+                local idle_called = nil
+                for _, handler in ipairs(idle_handlers) do
+                    idle_called = true
+                    handler()
+                end
+                if idle_called then
+                    -- handlers don't complete in 0 time, and may modify timers
+                    wait = mp.get_next_timeout() or 1e20
+                    if wait < 0 then
+                        wait = 0
+                    end
+                end
             end
-            -- Resume playloop - important especially if an error happened while
-            -- suspended, and the error was handled, but no resume was done.
-            mp.resume_all()
             if allow_wait ~= true then
                 return
             end
@@ -547,12 +570,35 @@ end
 
 local hook_table = {}
 
+local hook_mt = {}
+hook_mt.__index = hook_mt
+
+function hook_mt.cont(t)
+    if t._id == nil then
+        mp.msg.error("hook already continued")
+    else
+        mp.raw_hook_continue(t._id)
+        t._id = nil
+    end
+end
+
+function hook_mt.defer(t)
+    t._defer = true
+end
+
 mp.register_event("hook", function(ev)
     local fn = hook_table[tonumber(ev.id)]
+    local hookobj = {
+        _id = ev.hook_id,
+        _defer = false,
+    }
+    setmetatable(hookobj, hook_mt)
     if fn then
-        fn()
+        fn(hookobj)
     end
-    mp.raw_hook_continue(ev.hook_id)
+    if (not hookobj._defer) and hookobj._id ~= nil then
+        hookobj:cont()
+    end
 end)
 
 function mp.add_hook(name, pri, cb)
@@ -569,9 +615,10 @@ local async_next_id = 1
 function mp.command_native_async(node, cb)
     local id = async_next_id
     async_next_id = async_next_id + 1
+    cb = cb or function() end
     local res, err = mp.raw_command_native_async(id, node)
     if not res then
-        cb(false, nil, err)
+        mp.add_timeout(0, function() cb(false, nil, err) end)
         return res, err
     end
     local t = {cb = cb, id = id}
@@ -717,6 +764,10 @@ end
 
 function mp_utils.getcwd()
     return mp.get_property("working-directory")
+end
+
+function mp_utils.getpid()
+    return mp.get_property_number("pid")
 end
 
 function mp_utils.format_bytes_humanized(b)

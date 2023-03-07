@@ -73,7 +73,8 @@ const struct m_sub_options stream_lavf_conf = {
     },
 };
 
-static const char *const http_like[];
+static const char *const http_like[] =
+    {"http", "https", "mmsh", "mmshttp", "httproxy", NULL};
 
 static int open_f(stream_t *stream);
 static struct mp_tags *read_icy(stream_t *stream);
@@ -270,7 +271,7 @@ static int open_f(stream_t *stream)
     for (int i = 0; i < sizeof(prefix) / sizeof(prefix[0]); i++)
         if (!strncmp(filename, prefix[i], strlen(prefix[i])))
             filename += strlen(prefix[i]);
-    if (!strncmp(filename, "rtsp:", 5)) {
+    if (!strncmp(filename, "rtsp:", 5) || !strncmp(filename, "rtsps:", 6)) {
         /* This is handled as a special demuxer, without a separate
          * stream layer. demux_lavf will do all the real work. Note
          * that libavformat doesn't even provide a protocol entry for
@@ -404,16 +405,13 @@ done:
     return res;
 }
 
-static const char *const http_like[] =
-    {"http", "https", "mmsh", "mmshttp", "httproxy", NULL};
-
 const stream_info_t stream_info_ffmpeg = {
   .name = "ffmpeg",
   .open = open_f,
   .protocols = (const char *const[]){
-     "rtmp", "rtsp", "http", "https", "mms", "mmst", "mmsh", "mmshttp", "rtp",
-     "httpproxy", "rtmpe", "rtmps", "rtmpt", "rtmpte", "rtmpts", "srtp",
-     "gopher", "data",
+     "rtmp", "rtsp", "rtsps", "http", "https", "mms", "mmst", "mmsh", "mmshttp",
+     "rtp", "httpproxy", "rtmpe", "rtmps", "rtmpt", "rtmpte", "rtmpts", "srt",
+     "rist", "srtp", "gopher", "gophers", "data", "ipfs", "ipns",
      NULL },
   .can_write = true,
   .stream_origin = STREAM_ORIGIN_NET,

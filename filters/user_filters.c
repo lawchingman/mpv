@@ -34,6 +34,7 @@ const struct mp_user_filter_entry *af_list[] = {
     &af_lavfi,
     &af_lavfi_bridge,
     &af_scaletempo,
+    &af_scaletempo2,
     &af_format,
 #if HAVE_RUBBERBAND
     &af_rubberband,
@@ -66,7 +67,6 @@ const struct m_obj_list af_obj_list = {
     .get_desc = get_af_desc,
     .description = "audio filters",
     .allow_disable_entries = true,
-    .allow_unknown_entries = true,
     .check_unknown_entry = check_af_lavfi,
     .print_help_list = print_af_help_list,
     .print_unknown_entry_help = print_af_lavfi_help,
@@ -123,7 +123,6 @@ const struct m_obj_list vf_obj_list = {
     .get_desc = get_vf_desc,
     .description = "video filters",
     .allow_disable_entries = true,
-    .allow_unknown_entries = true,
     .check_unknown_entry = check_vf_lavfi,
     .print_help_list = print_vf_help_list,
     .print_unknown_entry_help = print_vf_lavfi_help,
@@ -156,7 +155,7 @@ struct mp_filter *mp_create_user_filter(struct mp_filter *parent,
         if (strncmp(name, "lavfi-", 6) == 0)
             name += 6;
         struct mp_lavfi *l =
-            mp_lavfi_create_filter(parent, frame_type, true, NULL, name, args);
+            mp_lavfi_create_filter(parent, frame_type, true, NULL, NULL, name, args);
         if (l)
             f = l->f;
         goto done;

@@ -22,9 +22,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "misc/bstr.h"
+
 struct mp_cancel;
 
+// Incrementally called with data that was read. Buffer valid only during call.
+// size==0 means EOF.
 typedef void (*subprocess_read_cb)(void *ctx, char *data, size_t size);
+// Incrementally called to refill *mp_subprocess_fd.write_buf, whenever write_buf
+// has length 0 and the pipe is writable. While writing, *write_buf is adjusted
+// to contain only the not yet written data.
+// Not filling the buffer means EOF.
+typedef void (*subprocess_write_cb)(void *ctx);
 
 void mp_devnull(void *ctx, char *data, size_t size);
 
@@ -37,6 +46,9 @@ struct mp_subprocess_fd {
     // Note: "neutral" initialization requires setting src_fd=-1.
     subprocess_read_cb on_read;     // if not NULL, serve reads
     void *on_read_ctx;              // for on_read(on_read_ctx, ...)
+    subprocess_write_cb on_write;   // if not NULL, serve writes
+    void *on_write_ctx;             // for on_write(on_write_ctx, ...)
+    bstr *write_buf;                // must be !=NULL if on_write is set
     int src_fd;                     // if >=0, dup this FD to target FD
 };
 
@@ -72,14 +84,5 @@ const char *mp_subprocess_err_str(int num);
 // Caller must set *opts.
 void mp_subprocess2(struct mp_subprocess_opts *opts,
                     struct mp_subprocess_result *res);
-
-// Start a subprocess. Uses callbacks to read from stdout and stderr.
-// Returns any of MP_SUBPROCESS_*, or a value >=0 for the process exir
-int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
-                  subprocess_read_cb on_stdout, subprocess_read_cb on_stderr,
-                  char **error);
-
-struct mp_log;
-void mp_subprocess_detached(struct mp_log *log, char **args);
 
 #endif

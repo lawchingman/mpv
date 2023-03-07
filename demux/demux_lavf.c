@@ -36,6 +36,12 @@
 #include <libavutil/display.h>
 #include <libavutil/opt.h>
 
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(56, 43, 100)
+#include <libavutil/dovi_meta.h>
+#endif
+
+#include "audio/chmap_avchannel.h"
+
 #include "common/msg.h"
 #include "common/tags.h"
 #include "common/av_common.h"
@@ -138,7 +144,6 @@ struct format_hack {
     bool use_stream_ids : 1;    // has a meaningful native stream IDs (export it)
     bool fully_read : 1;        // set demuxer.fully_read flag
     bool detect_charset : 1;    // format is a small text file, possibly not UTF8
-    bool image_format : 1;      // expected to contain exactly 1 frame
     // Do not confuse player's position estimation (position is into external
     // segment, with e.g. HLS, player knows about the playlist main file only).
     bool clear_filepos : 1;
@@ -148,6 +153,7 @@ struct format_hack {
     bool no_seek : 1;
     bool no_pcm_seek : 1;
     bool no_seek_on_no_duration : 1;
+    bool readall_on_no_streamseek : 1;
 };
 
 #define BLACKLIST(fmt) {fmt, .ignore = true}
@@ -186,6 +192,10 @@ static const struct format_hack format_hacks[] = {
     // reset timestamps, which causes all sorts of problems.
     {"ogg", .linearize_audio_ts = true, .use_stream_ids = true},
 
+    // At some point, FFmpeg lost the ability to read gif from unseekable
+    // streams.
+    {"gif", .readall_on_no_streamseek = true},
+
     TEXTSUB("aqtitle"), TEXTSUB("jacosub"), TEXTSUB("microdvd"),
     TEXTSUB("mpl2"), TEXTSUB("mpsub"), TEXTSUB("pjs"), TEXTSUB("realtext"),
     TEXTSUB("sami"), TEXTSUB("srt"), TEXTSUB("stl"), TEXTSUB("subviewer"),
@@ -200,8 +210,6 @@ static const struct format_hack format_hacks[] = {
     BLACKLIST("bin"),
     // Useless, does not work with custom streams.
     BLACKLIST("image2"),
-    // Image demuxers ("<name>_pipe" is detected explicitly)
-    {"image2pipe", .image_format = true},
     {0}
 };
 
@@ -222,7 +230,7 @@ typedef struct lavf_priv {
     bool own_stream;
     char *filename;
     struct format_hack format_hack;
-    AVInputFormat *avif;
+    const AVInputFormat *avif;
     int avif_flags;
     AVFormatContext *avfc;
     AVIOContext *pb;
@@ -260,16 +268,10 @@ static void update_read_stats(struct demuxer *demuxer)
     for (int n = 0; n < priv->num_nested; n++) {
         struct nested_stream *nest = &priv->nested[n];
 
-#if !HAVE_FFMPEG_STRICT_ABI
-        // Note: accessing the bytes_read field is not allowed by FFmpeg's API.
-        // This is fully intentional - there is no other way to get this
-        // information (not even by custom I/O, because the connection reuse
-        // mechanism by the HLS demuxer would get disabled).
         int64_t cur = nest->id->bytes_read;
         int64_t new = cur - nest->last_bytes;
         nest->last_bytes = cur;
         demux_report_unbuffered_read_bytes(demuxer, new);
-#endif
     }
 }
 
@@ -438,7 +440,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     if (!lavfdopts->allow_mimetype || !mime_type)
         mime_type = "";
 
-    AVInputFormat *forced_format = NULL;
+    const AVInputFormat *forced_format = NULL;
     const char *format = lavfdopts->format;
     if (!format)
         format = s->lavf_type;
@@ -458,7 +460,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
 
     AVProbeData avpd = {
         // Disable file-extension matching with normal checks
-        .filename = priv->filename,
+        .filename = check <= DEMUX_CHECK_REQUEST ? priv->filename : "",
         .buf_size = 0,
         .buf = av_mallocz(PROBE_BUF_SIZE + AV_INPUT_BUFFER_PADDING_SIZE),
     };
@@ -521,11 +523,6 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     if (!priv->avif) {
         MP_VERBOSE(demuxer, "No format found, try lowering probescore or forcing the format.\n");
         return -1;
-    }
-
-    if (bstr_endswith0(bstr0(priv->avif->name), "_pipe")) {
-        MP_VERBOSE(demuxer, "Assuming this is an image format.\n");
-        priv->format_hack.image_format = true;
     }
 
     if (lavfdopts->hacks)
@@ -605,6 +602,8 @@ static void export_replaygain(demuxer_t *demuxer, struct sh_stream *sh,
 
         av_rgain = (AVReplayGain*)src_sd->data;
         rgain    = talloc_ptrtype(demuxer, rgain);
+        rgain->track_gain = rgain->album_gain = 0;
+        rgain->track_peak = rgain->album_peak = 1;
 
         // Set values in *rgain, using track gain as a fallback for album gain
         // if the latter is not present. This behavior matches that in
@@ -648,6 +647,18 @@ static int dict_get_decimal(AVDictionary *dict, const char *entry, int def)
     return def;
 }
 
+static bool is_image(AVStream *st, bool attached_picture, const AVInputFormat *avif)
+{
+    return st->nb_frames <= 1 && (
+        attached_picture ||
+        bstr_endswith0(bstr0(avif->name), "_pipe") ||
+        strcmp(avif->name, "alias_pix") == 0 ||
+        strcmp(avif->name, "gif") == 0 ||
+        strcmp(avif->name, "image2pipe") == 0 ||
+        (st->codecpar->codec_id == AV_CODEC_ID_AV1 && st->nb_frames == 1)
+    );
+}
+
 static void handle_new_stream(demuxer_t *demuxer, int i)
 {
     lavf_priv_t *priv = demuxer->priv;
@@ -661,10 +672,22 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
     case AVMEDIA_TYPE_AUDIO: {
         sh = demux_alloc_sh_stream(STREAM_AUDIO);
 
+#if !HAVE_AV_CHANNEL_LAYOUT
         // probably unneeded
         mp_chmap_set_unknown(&sh->codec->channels, codec->channels);
         if (codec->channel_layout)
             mp_chmap_from_lavc(&sh->codec->channels, codec->channel_layout);
+#else
+        if (!mp_chmap_from_av_layout(&sh->codec->channels, &codec->ch_layout)) {
+            char layout[128] = {0};
+            MP_WARN(demuxer,
+                    "Failed to convert channel layout %s to mpv one!\n",
+                    av_channel_layout_describe(&codec->ch_layout,
+                                               layout, 128) < 0 ?
+                    "undefined" : layout);
+        }
+#endif
+
         sh->codec->samplerate = codec->sample_rate;
         sh->codec->bitrate = codec->bit_rate;
 
@@ -707,8 +730,11 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
         sh->codec->disp_h = codec->height;
         if (st->avg_frame_rate.num)
             sh->codec->fps = av_q2d(st->avg_frame_rate);
-        if (priv->format_hack.image_format)
+        if (is_image(st, sh->attached_picture, priv->avif)) {
+            MP_VERBOSE(demuxer, "Assuming this is an image format.\n");
+            sh->image = true;
             sh->codec->fps = priv->mf_fps;
+        }
         sh->codec->par_w = st->sample_aspect_ratio.num;
         sh->codec->par_h = st->sample_aspect_ratio.den;
 
@@ -718,6 +744,15 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
             if (!isnan(r))
                 sh->codec->rotate = (((int)(-r) % 360) + 360) % 360;
         }
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(56, 43, 100)
+        if ((sd = av_stream_get_side_data(st, AV_PKT_DATA_DOVI_CONF, NULL))) {
+            const AVDOVIDecoderConfigurationRecord *cfg = (void *) sd;
+            MP_VERBOSE(demuxer, "Found Dolby Vision config record: profile "
+                       "%d level %d\n", cfg->dv_profile, cfg->dv_level);
+            av_format_inject_global_side_data(avfc);
+        }
+#endif
 
         // This also applies to vfw-muxed mkv, but we can't detect these easily.
         sh->codec->avi_dts = matches_avinputformat_name(priv, "avi");
@@ -1018,6 +1053,20 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     if (av_dict_copy(&priv->av_opts, dopts, 0) < 0) {
         av_dict_free(&dopts);
         return -1;
+    }
+
+    if (priv->format_hack.readall_on_no_streamseek && priv->pb &&
+        !priv->pb->seekable)
+    {
+        MP_VERBOSE(demuxer, "Non-seekable demuxer pre-read hack...\n");
+        // Read incremental to avoid unnecessary large buffer sizes.
+        int r = 0;
+        for (int n = 16; n < 29; n++) {
+            r = stream_peek(priv->stream, 1 << n);
+            if (r < (1 << n))
+                break;
+        }
+        MP_VERBOSE(demuxer, "...did read %d bytes.\n", r);
     }
 
     if (avformat_open_input(&avfc, priv->filename, priv->avif, &dopts) < 0) {
@@ -1333,6 +1382,8 @@ static void demux_close_lavf(demuxer_t *demuxer)
         }
         if (priv->own_stream)
             free_stream(priv->stream);
+        if (priv->av_opts)
+            av_dict_free(&priv->av_opts);
         talloc_free(priv);
         demuxer->priv = NULL;
     }

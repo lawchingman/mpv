@@ -21,12 +21,17 @@
 
 #include <libavutil/mem.h>
 #include <libavutil/common.h>
+#include <libavutil/display.h>
 #include <libavutil/bswap.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/intreadwrite.h>
 #include <libavutil/rational.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/mastering_display_metadata.h>
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 16, 100)
+# include <libavutil/dovi_meta.h>
+#endif
 
 #include "mpv_talloc.h"
 
@@ -203,6 +208,8 @@ static void mp_image_destructor(void *ptr)
     av_buffer_unref(&mpi->hwctx);
     av_buffer_unref(&mpi->icc_profile);
     av_buffer_unref(&mpi->a53_cc);
+    av_buffer_unref(&mpi->dovi);
+    av_buffer_unref(&mpi->film_grain);
     for (int n = 0; n < mpi->num_ff_side_data; n++)
         av_buffer_unref(&mpi->ff_side_data[n].buf);
     talloc_free(mpi->ff_side_data);
@@ -216,15 +223,13 @@ int mp_chroma_div_up(int size, int shift)
 // Return the storage width in pixels of the given plane.
 int mp_image_plane_w(struct mp_image *mpi, int plane)
 {
-    return mp_chroma_div_up(MP_ALIGN_UP(mpi->w, mpi->fmt.align_x),
-                            mpi->fmt.xs[plane]);
+    return mp_chroma_div_up(mpi->w, mpi->fmt.xs[plane]);
 }
 
 // Return the storage height in pixels of the given plane.
 int mp_image_plane_h(struct mp_image *mpi, int plane)
 {
-    return mp_chroma_div_up(MP_ALIGN_UP(mpi->h, mpi->fmt.align_y),
-                            mpi->fmt.ys[plane]);
+    return mp_chroma_div_up(mpi->h, mpi->fmt.ys[plane]);
 }
 
 // Caller has to make sure this doesn't exceed the allocated plane data/strides.
@@ -339,6 +344,8 @@ struct mp_image *mp_image_new_ref(struct mp_image *img)
     ref_buffer(&ok, &new->hwctx);
     ref_buffer(&ok, &new->icc_profile);
     ref_buffer(&ok, &new->a53_cc);
+    ref_buffer(&ok, &new->dovi);
+    ref_buffer(&ok, &new->film_grain);
 
     new->ff_side_data = talloc_memdup(NULL, new->ff_side_data,
                         new->num_ff_side_data * sizeof(new->ff_side_data[0]));
@@ -380,6 +387,8 @@ struct mp_image *mp_image_new_dummy_ref(struct mp_image *img)
     new->hwctx = NULL;
     new->icc_profile = NULL;
     new->a53_cc = NULL;
+    new->dovi = NULL;
+    new->film_grain = NULL;
     new->num_ff_side_data = 0;
     new->ff_side_data = NULL;
     return new;
@@ -529,6 +538,8 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
         }
     }
     assign_bufref(&dst->icc_profile, src->icc_profile);
+    assign_bufref(&dst->dovi, src->dovi);
+    assign_bufref(&dst->film_grain, src->film_grain);
     assign_bufref(&dst->a53_cc, src->a53_cc);
 }
 
@@ -593,7 +604,7 @@ static bool endian_swap_bytes(void *d, size_t bytes, size_t word_size)
             AV_WL32(ud + x * 2, AV_RB32(ud + x * 2));
         break;
     default:
-        assert(0);
+        MP_ASSERT_UNREACHABLE();
     }
 
     return true;
@@ -669,7 +680,7 @@ void mp_image_clear(struct mp_image *img, int x0, int y0, int x1, int y1)
         int p_w = mp_image_plane_w(&area, p);
         for (int y = 0; y < p_h; y++) {
             void *ptr = area.planes[p] + (ptrdiff_t)area.stride[p] * y;
-            if (plane_size[p] && plane_clear[p]) {
+            if (plane_size[p]) {
                 memset_pattern(ptr, p_w / misery, plane_clear[p], plane_size[p]);
             } else {
                 memset(ptr, 0, mp_image_plane_bytes(&area, p, 0, area.w));
@@ -874,11 +885,11 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
         // function, but this field can still be relevant for guiding gamut
         // mapping optimizations, and it's also used by `mp_get_csp_matrix`
         // when deciding what RGB space to map XYZ to for VOs that don't want
-        // to directly ingest XYZ into their color pipeline. BT.709 would be a
-        // sane default here, but it runs the risk of clipping any wide gamut
-        // content, so we pick BT.2020 instead to be on the safer side.
+        // to directly ingest XYZ into their color pipeline. We pick DCI-P3
+        // because it is the colorspace most closely matching digital cinema
+        // content, and also has the correct DCI whitepoint.
         if (params->color.primaries == MP_CSP_PRIM_AUTO)
-            params->color.primaries = MP_CSP_PRIM_BT_2020;
+            params->color.primaries = MP_CSP_PRIM_DCI_P3;
         if (params->color.gamma == MP_CSP_TRC_AUTO)
             params->color.gamma = MP_CSP_TRC_LINEAR;
     } else {
@@ -973,6 +984,13 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
         dst->params.alpha = p->alpha;
     }
 
+    sd = av_frame_get_side_data(src, AV_FRAME_DATA_DISPLAYMATRIX);
+    if (sd) {
+        double r = av_display_rotation_get((int32_t *)(sd->data));
+        if (!isnan(r))
+            dst->params.rotate = (((int)(-r) % 360) + 360) % 360;
+    }
+
     sd = av_frame_get_side_data(src, AV_FRAME_DATA_ICC_PROFILE);
     if (sd)
         dst->icc_profile = sd->buf;
@@ -995,6 +1013,24 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
     sd = av_frame_get_side_data(src, AV_FRAME_DATA_A53_CC);
     if (sd)
         dst->a53_cc = sd->buf;
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 16, 100)
+    sd = av_frame_get_side_data(src, AV_FRAME_DATA_DOVI_METADATA);
+    if (sd) {
+        // Strip DoVi metadata that requires an EL, since it's near-impossible
+        // for us to support easily or sanely
+        const AVDOVIMetadata *metadata = (AVDOVIMetadata *) sd->buf->data;
+        const AVDOVIRpuDataHeader *rpu = av_dovi_get_header(metadata);
+        if (rpu->disable_residual_flag)
+            dst->dovi = sd->buf;
+    }
+#endif
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(56, 61, 100)
+    sd = av_frame_get_side_data(src, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
+    if (sd)
+        dst->film_grain = sd->buf;
+#endif
 
     for (int n = 0; n < src->nb_side_data; n++) {
         sd = src->side_data[n];

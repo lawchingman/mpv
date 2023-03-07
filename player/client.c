@@ -83,7 +83,6 @@ struct mp_client_api {
     int num_custom_protocols;
 
     struct mpv_render_context *render_context;
-    struct mpv_opengl_cb_context *gl_cb_ctx;
 };
 
 struct observe_property {
@@ -107,7 +106,7 @@ struct observe_property {
 };
 
 struct mpv_handle {
-    // -- immmutable
+    // -- immutable
     char name[MAX_CLIENT_NAME];
     struct mp_log *log;
     struct MPContext *mpctx;
@@ -194,8 +193,6 @@ void mp_clients_destroy(struct MPContext *mpctx)
     if (!mpctx->clients)
         return;
     assert(mpctx->clients->num_clients == 0);
-
-    TA_FREEP(&mpctx->clients->gl_cb_ctx);
 
     // The API user is supposed to call mpv_render_context_free(). It's simply
     // not allowed not to do this.
@@ -386,15 +383,6 @@ void mpv_set_wakeup_callback(mpv_handle *ctx, void (*cb)(void *d), void *d)
     pthread_mutex_unlock(&ctx->wakeup_lock);
 }
 
-void mpv_suspend(mpv_handle *ctx)
-{
-    MP_ERR(ctx, "mpv_suspend() is deprecated and does nothing.\n");
-}
-
-void mpv_resume(mpv_handle *ctx)
-{
-}
-
 static void lock_core(mpv_handle *ctx)
 {
     mp_dispatch_lock(ctx->mpctx->dispatch);
@@ -555,11 +543,6 @@ static void mp_destroy_client(mpv_handle *ctx, bool terminate)
 void mpv_destroy(mpv_handle *ctx)
 {
     mp_destroy_client(ctx, false);
-}
-
-void mpv_detach_destroy(mpv_handle *ctx)
-{
-    mpv_destroy(ctx);
 }
 
 void mpv_terminate_destroy(mpv_handle *ctx)
@@ -863,16 +846,9 @@ int mp_client_send_event_dup(struct MPContext *mpctx, const char *client_name,
     return mp_client_send_event(mpctx, client_name, 0, event, event_data.data);
 }
 
-static bool deprecated_events[] = {
-    [MPV_EVENT_TRACKS_CHANGED] = true,
-    [MPV_EVENT_TRACK_SWITCHED] = true,
+const static bool deprecated_events[] = {
     [MPV_EVENT_IDLE] = true,
-    [MPV_EVENT_PAUSE] = true,
-    [MPV_EVENT_UNPAUSE] = true,
     [MPV_EVENT_TICK] = true,
-    [MPV_EVENT_SCRIPT_INPUT_DISPATCH] = true,
-    [MPV_EVENT_METADATA_UPDATE] = true,
-    [MPV_EVENT_CHAPTER_CHANGE] = true,
 };
 
 int mpv_request_event(mpv_handle *ctx, mpv_event_id event, int enable)
@@ -2098,21 +2074,14 @@ static const char *const event_table[] = {
     [MPV_EVENT_START_FILE] = "start-file",
     [MPV_EVENT_END_FILE] = "end-file",
     [MPV_EVENT_FILE_LOADED] = "file-loaded",
-    [MPV_EVENT_TRACKS_CHANGED] = "tracks-changed",
-    [MPV_EVENT_TRACK_SWITCHED] = "track-switched",
     [MPV_EVENT_IDLE] = "idle",
-    [MPV_EVENT_PAUSE] = "pause",
-    [MPV_EVENT_UNPAUSE] = "unpause",
     [MPV_EVENT_TICK] = "tick",
-    [MPV_EVENT_SCRIPT_INPUT_DISPATCH] = "script-input-dispatch",
     [MPV_EVENT_CLIENT_MESSAGE] = "client-message",
     [MPV_EVENT_VIDEO_RECONFIG] = "video-reconfig",
     [MPV_EVENT_AUDIO_RECONFIG] = "audio-reconfig",
-    [MPV_EVENT_METADATA_UPDATE] = "metadata-update",
     [MPV_EVENT_SEEK] = "seek",
     [MPV_EVENT_PLAYBACK_RESTART] = "playback-restart",
     [MPV_EVENT_PROPERTY_CHANGE] = "property-change",
-    [MPV_EVENT_CHAPTER_CHANGE] = "chapter-change",
     [MPV_EVENT_QUEUE_OVERFLOW] = "event-queue-overflow",
     [MPV_EVENT_HOOK] = "hook",
 };
@@ -2181,130 +2150,6 @@ mp_client_api_acquire_render_context(struct mp_client_api *ca)
     if (ca->render_context && mp_render_context_acquire(ca->render_context))
         res = ca->render_context;
     pthread_mutex_unlock(&ca->lock);
-    return res;
-}
-
-// Emulation of old opengl_cb API.
-
-#include "libmpv/opengl_cb.h"
-#include "libmpv/render_gl.h"
-
-struct mpv_opengl_cb_context {
-    struct mp_client_api *client_api;
-    mpv_opengl_cb_update_fn callback;
-    void *callback_ctx;
-};
-
-static mpv_opengl_cb_context *opengl_cb_get_context(mpv_handle *ctx)
-{
-    pthread_mutex_lock(&ctx->clients->lock);
-    mpv_opengl_cb_context *cb = ctx->clients->gl_cb_ctx;
-    if (!cb) {
-        cb = talloc_zero(NULL, struct mpv_opengl_cb_context);
-        cb->client_api = ctx->clients;
-        cb->client_api->gl_cb_ctx = cb;
-    }
-    pthread_mutex_unlock(&ctx->clients->lock);
-    return cb;
-}
-
-void mpv_opengl_cb_set_update_callback(mpv_opengl_cb_context *ctx,
-                                       mpv_opengl_cb_update_fn callback,
-                                       void *callback_ctx)
-{
-    // This was probably supposed to be thread-safe, but we don't care. It's
-    // compatibility code, and if you have problems, use the new API.
-    if (ctx->client_api->render_context) {
-        mpv_render_context_set_update_callback(ctx->client_api->render_context,
-                                               callback, callback_ctx);
-    }
-    // Nasty thing: could set this even while not initialized, so we need to
-    // preserve it.
-    ctx->callback = callback;
-    ctx->callback_ctx = callback_ctx;
-}
-
-int mpv_opengl_cb_init_gl(mpv_opengl_cb_context *ctx, const char *exts,
-                          mpv_opengl_cb_get_proc_address_fn get_proc_address,
-                          void *get_proc_address_ctx)
-{
-    if (ctx->client_api->render_context)
-        return MPV_ERROR_INVALID_PARAMETER;
-
-    // mpv_render_context_create() only calls mp_client_get_global() on it.
-    mpv_handle dummy = {.mpctx = ctx->client_api->mpctx};
-
-    mpv_render_param params[] = {
-        {MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL},
-        {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &(mpv_opengl_init_params){
-            .get_proc_address = get_proc_address,
-            .get_proc_address_ctx = get_proc_address_ctx,
-            .extra_exts = exts,
-        }},
-        // Hack for explicit legacy hwdec loading. We really want to make it
-        // impossible for proper render API users to trigger this.
-        {(mpv_render_param_type)-1, ctx->client_api->mpctx->global},
-        {0}
-    };
-    int err = mpv_render_context_create(&ctx->client_api->render_context,
-                                        &dummy, params);
-    if (err >= 0) {
-        mpv_render_context_set_update_callback(ctx->client_api->render_context,
-                                               ctx->callback, ctx->callback_ctx);
-    }
-    return err;
-}
-
-int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int w, int h)
-{
-    if (!ctx->client_api->render_context)
-        return MPV_ERROR_INVALID_PARAMETER;
-
-    mpv_render_param params[] = {
-        {MPV_RENDER_PARAM_OPENGL_FBO, &(mpv_opengl_fbo){
-            .fbo = fbo,
-            .w = w,
-            .h = abs(h),
-        }},
-        {MPV_RENDER_PARAM_FLIP_Y, &(int){h < 0}},
-        {0}
-    };
-    return mpv_render_context_render(ctx->client_api->render_context, params);
-}
-
-int mpv_opengl_cb_report_flip(mpv_opengl_cb_context *ctx, int64_t time)
-{
-    if (!ctx->client_api->render_context)
-        return MPV_ERROR_INVALID_PARAMETER;
-
-    mpv_render_context_report_swap(ctx->client_api->render_context);
-    return 0;
-}
-
-int mpv_opengl_cb_uninit_gl(mpv_opengl_cb_context *ctx)
-{
-    if (ctx->client_api->render_context)
-        mpv_render_context_free(ctx->client_api->render_context);
-    ctx->client_api->render_context = NULL;
-    return 0;
-}
-
-int mpv_opengl_cb_render(mpv_opengl_cb_context *ctx, int fbo, int vp[4])
-{
-    return mpv_opengl_cb_draw(ctx, fbo, vp[2], vp[3]);
-}
-
-void *mpv_get_sub_api(mpv_handle *ctx, mpv_sub_api sub_api)
-{
-    if (!ctx->mpctx->initialized)
-        return NULL;
-    void *res = NULL;
-    switch (sub_api) {
-    case MPV_SUB_API_OPENGL_CB:
-        res = opengl_cb_get_context(ctx);
-        break;
-    default:;
-    }
     return res;
 }
 

@@ -162,6 +162,28 @@ Available filters are:
             Changing playback speed would change pitch, leaving audio tempo at
             1.2x.
 
+``scaletempo2[=option1:option2:...]``
+    Scales audio tempo without altering pitch.
+    The algorithm is ported from chromium and uses the
+    Waveform Similarity Overlap-and-add (WSOLA) method.
+    It seems to achieve a higher audio quality than scaletempo and rubberband.
+
+    By default, the ``search-interval`` and ``window-size`` parameters
+    have the same values as in chromium.
+
+    ``min-speed=<speed>``
+        Mute audio if the playback speed is below ``<speed>``. (default: 0.25)
+
+    ``max-speed=<speed>``
+        Mute audio if the playback speed is above ``<speed>``
+        and ``<speed> != 0``. (default: 4.0)
+
+    ``search-interval=<amount>``
+        Length in milliseconds to search for best overlap position. (default: 30)
+
+    ``window-size=<amount>``
+        Length in milliseconds of the overlap-and-add window. (default: 20)
+
 ``rubberband``
     High quality pitch correction with librubberband. This can be used in place
     of ``scaletempo``, and will be used to adjust audio pitch when playing
@@ -176,7 +198,7 @@ Available filters are:
     for each option. The options are not documented here, because they are
     merely passed to librubberband. Look at the librubberband documentation
     to learn what each option does:
-    http://breakfastquay.com/rubberband/code-doc/classRubberBand_1_1RubberBandStretcher.html
+    https://breakfastquay.com/rubberband/code-doc/classRubberBand_1_1RubberBandStretcher.html
     (The mapping of the mpv rubberband filter sub-option names and values to
     those of librubberband follows a simple pattern: ``"Option" + Name + Value``.)
 

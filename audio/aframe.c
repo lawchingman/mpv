@@ -18,9 +18,12 @@
 #include <libavutil/frame.h>
 #include <libavutil/mem.h>
 
+#include "config.h"
+
 #include "common/common.h"
 
 #include "chmap.h"
+#include "chmap_avchannel.h"
 #include "fmt-conversion.h"
 #include "format.h"
 #include "aframe.h"
@@ -121,6 +124,16 @@ struct mp_aframe *mp_aframe_from_avframe(struct AVFrame *av_frame)
     if (!av_frame || av_frame->width > 0 || av_frame->height > 0)
         return NULL;
 
+#if HAVE_AV_CHANNEL_LAYOUT
+    if (!av_channel_layout_check(&av_frame->ch_layout))
+        return NULL;
+
+    struct mp_chmap converted_map = { 0 };
+    if (!mp_chmap_from_av_layout(&converted_map, &av_frame->ch_layout)) {
+        return NULL;
+    }
+#endif
+
     int format = af_from_avformat(av_frame->format);
     if (!format && av_frame->format != AV_SAMPLE_FMT_NONE)
         return NULL;
@@ -132,11 +145,15 @@ struct mp_aframe *mp_aframe_from_avframe(struct AVFrame *av_frame)
         abort();
 
     frame->format = format;
+#if !HAVE_AV_CHANNEL_LAYOUT
     mp_chmap_from_lavc(&frame->chmap, frame->av_frame->channel_layout);
 
     // FFmpeg being a stupid POS again
     if (frame->chmap.num != frame->av_frame->channels)
         mp_chmap_from_channels(&frame->chmap, av_frame->channels);
+#else
+    frame->chmap = converted_map;
+#endif
 
     if (av_frame->opaque_ref) {
         struct avframe_opaque *op = (void *)av_frame->opaque_ref->data;
@@ -204,9 +221,16 @@ void mp_aframe_config_copy(struct mp_aframe *dst, struct mp_aframe *src)
 
     dst->av_frame->sample_rate = src->av_frame->sample_rate;
     dst->av_frame->format = src->av_frame->format;
+
+#if !HAVE_AV_CHANNEL_LAYOUT
     dst->av_frame->channel_layout = src->av_frame->channel_layout;
     // FFmpeg being a stupid POS again
     dst->av_frame->channels = src->av_frame->channels;
+#else
+    if (av_channel_layout_copy(&dst->av_frame->ch_layout,
+                               &src->av_frame->ch_layout) < 0)
+        abort();
+#endif
 }
 
 // Copy "soft" attributes from src to dst, excluding things which affect
@@ -315,13 +339,21 @@ bool mp_aframe_set_chmap(struct mp_aframe *frame, struct mp_chmap *in)
         return false;
     if (mp_aframe_is_allocated(frame) && in->num != frame->chmap.num)
         return false;
+
+#if !HAVE_AV_CHANNEL_LAYOUT
     uint64_t lavc_layout = mp_chmap_to_lavc_unchecked(in);
     if (!lavc_layout && in->num)
         return false;
+#endif
     frame->chmap = *in;
+
+#if !HAVE_AV_CHANNEL_LAYOUT
     frame->av_frame->channel_layout = lavc_layout;
     // FFmpeg being a stupid POS again
     frame->av_frame->channels = frame->chmap.num;
+#else
+    mp_chmap_to_av_layout(&frame->av_frame->ch_layout, in);
+#endif
     return true;
 }
 
@@ -434,6 +466,37 @@ void mp_aframe_skip_samples(struct mp_aframe *f, int samples)
         f->pts += samples / mp_aframe_get_effective_rate(f);
 }
 
+// sanitize a floating point sample value
+#define sanitizef(f) do {       \
+    if (!isnormal(f))           \
+        (f) = 0;                \
+} while (0)
+
+void mp_aframe_sanitize_float(struct mp_aframe *mpa)
+{
+    int format = af_fmt_from_planar(mp_aframe_get_format(mpa));
+    if (format != AF_FORMAT_FLOAT && format != AF_FORMAT_DOUBLE)
+        return;
+    int num_planes = mp_aframe_get_planes(mpa);
+    uint8_t **planes = mp_aframe_get_data_rw(mpa);
+    if (!planes)
+        return;
+    for (int p = 0; p < num_planes; p++) {
+        void *ptr = planes[p];
+        int total = mp_aframe_get_total_plane_samples(mpa);
+        switch (format) {
+        case AF_FORMAT_FLOAT:
+            for (int s = 0; s < total; s++)
+                sanitizef(((float *)ptr)[s]);
+            break;
+        case AF_FORMAT_DOUBLE:
+            for (int s = 0; s < total; s++)
+                sanitizef(((double *)ptr)[s]);
+            break;
+        }
+    }
+}
+
 // Return the timestamp of the sample just after the end of this frame.
 double mp_aframe_end_pts(struct mp_aframe *f)
 {
@@ -461,13 +524,13 @@ void mp_aframe_clip_timestamps(struct mp_aframe *f, double start, double end)
     double rate = mp_aframe_get_effective_rate(f);
     if (f_end == MP_NOPTS_VALUE)
         return;
-    if (af_fmt_is_spdif(mp_aframe_get_format(f)))
-        return;
     if (end != MP_NOPTS_VALUE) {
         if (f_end >= end) {
             if (f->pts >= end) {
                 f->av_frame->nb_samples = 0;
             } else {
+                if (af_fmt_is_spdif(mp_aframe_get_format(f)))
+                    return;
                 int new = (end - f->pts) * rate;
                 f->av_frame->nb_samples = MPCLAMP(new, 0, f->av_frame->nb_samples);
             }
@@ -479,6 +542,8 @@ void mp_aframe_clip_timestamps(struct mp_aframe *f, double start, double end)
                 f->av_frame->nb_samples = 0;
                 f->pts = f_end;
             } else {
+                if (af_fmt_is_spdif(mp_aframe_get_format(f)))
+                    return;
                 int skip = (start - f->pts) * rate;
                 skip = MPCLAMP(skip, 0, f->av_frame->nb_samples);
                 mp_aframe_skip_samples(f, skip);
@@ -633,16 +698,24 @@ int mp_aframe_pool_allocate(struct mp_aframe_pool *pool, struct mp_aframe *frame
     AVFrame *av_frame = frame->av_frame;
     if (av_frame->extended_data != av_frame->data)
         av_freep(&av_frame->extended_data); // sigh
-    av_frame->extended_data =
-        av_mallocz_array(planes, sizeof(av_frame->extended_data[0]));
-    if (!av_frame->extended_data)
-        abort();
+    if (planes > AV_NUM_DATA_POINTERS) {
+        av_frame->extended_data =
+            av_calloc(planes, sizeof(av_frame->extended_data[0]));
+        if (!av_frame->extended_data)
+            abort();
+    } else {
+        av_frame->extended_data = av_frame->data;
+    }
     av_frame->buf[0] = av_buffer_pool_get(pool->avpool);
     if (!av_frame->buf[0])
         return -1;
     av_frame->linesize[0] = samples * sstride;
     for (int n = 0; n < planes; n++)
         av_frame->extended_data[n] = av_frame->buf[0]->data + n * plane_size;
+    if (planes > AV_NUM_DATA_POINTERS) {
+        for (int n = 0; n < AV_NUM_DATA_POINTERS; n++)
+            av_frame->data[n] = av_frame->extended_data[n];
+    }
     av_frame->nb_samples = samples;
 
     return 0;

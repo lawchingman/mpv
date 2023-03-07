@@ -110,16 +110,19 @@ struct dec_wrapper_opts {
     int64_t audio_reverse_size;
 };
 
-static int decoder_list_opt(struct mp_log *log, const m_option_t *opt,
-                            struct bstr name, struct bstr param);
+static int decoder_list_help(struct mp_log *log, const m_option_t *opt,
+                             struct bstr name);
 
 const struct m_sub_options dec_wrapper_conf = {
     .opts = (const struct m_option[]){
         {"correct-pts", OPT_FLAG(correct_pts)},
         {"fps", OPT_DOUBLE(force_fps), M_RANGE(0, DBL_MAX)},
-        {"ad", OPT_STRING_VALIDATE(audio_decoders, decoder_list_opt)},
-        {"vd", OPT_STRING_VALIDATE(video_decoders, decoder_list_opt)},
-        {"audio-spdif", OPT_STRING_VALIDATE(audio_spdif, decoder_list_opt)},
+        {"ad", OPT_STRING(audio_decoders),
+            .help = decoder_list_help},
+        {"vd", OPT_STRING(video_decoders),
+            .help = decoder_list_help},
+        {"audio-spdif", OPT_STRING(audio_spdif),
+            .help = decoder_list_help},
         {"video-rotate", OPT_CHOICE(video_rotate, {"no", -1}),
             .flags = UPDATE_IMGPAR, M_RANGE(0, 359)},
         {"video-aspect-override", OPT_ASPECT(movie_aspect),
@@ -226,16 +229,15 @@ struct priv {
     char *cur_hwdec;
     char *decoder_desc;
     bool try_spdif;
+    bool attached_picture;
     bool pts_reset;
     int attempt_framedrops; // try dropping this many frames
     int dropped_frames; // total frames _probably_ dropped
 };
 
-static int decoder_list_opt(struct mp_log *log, const m_option_t *opt,
-                            struct bstr name, struct bstr param)
+static int decoder_list_help(struct mp_log *log, const m_option_t *opt,
+                             struct bstr name)
 {
-    if (!bstr_equals0(param, "help"))
-        return 1;
     if (strcmp(opt->name, "ad") == 0) {
         struct mp_decoder_list *list = audio_decoder_list();
         mp_print_decoders(log, MSGL_INFO, "Audio decoders:", list);
@@ -524,6 +526,14 @@ void mp_decoder_wrapper_set_spdif_flag(struct mp_decoder_wrapper *d, bool spdif)
     pthread_mutex_unlock(&p->cache_lock);
 }
 
+void mp_decoder_wrapper_set_coverart_flag(struct mp_decoder_wrapper *d, bool c)
+{
+    struct priv *p = d->f->priv;
+    pthread_mutex_lock(&p->cache_lock);
+    p->attached_picture = c;
+    pthread_mutex_unlock(&p->cache_lock);
+}
+
 bool mp_decoder_wrapper_get_pts_reset(struct mp_decoder_wrapper *d)
 {
     struct priv *p = d->f->priv;
@@ -584,12 +594,14 @@ static void fix_image_params(struct priv *p,
     if (m.p_w <= 0 || m.p_h <= 0)
         m.p_w = m.p_h = 1;
 
-    m.rotate = p->codec->rotate;
     m.stereo3d = p->codec->stereo_mode;
 
     if (opts->video_rotate < 0) {
         m.rotate = 0;
     } else {
+        // ffmpeg commit 535a835e51 says that frame rotate takes priority
+        if (!m.rotate)
+            m.rotate = p->codec->rotate;
         m.rotate = (m.rotate + opts->video_rotate) % 360;
     }
 
@@ -974,19 +986,20 @@ static void read_frame(struct priv *p)
     if (!frame.type)
         return;
 
-    if (p->header->attached_picture && frame.type == MP_FRAME_VIDEO) {
-        p->decoded_coverart = frame;
-        mp_filter_internal_mark_progress(p->decf);
-        return;
-    }
-
     pthread_mutex_lock(&p->cache_lock);
+    if (p->attached_picture && frame.type == MP_FRAME_VIDEO)
+        p->decoded_coverart = frame;
     if (p->attempt_framedrops) {
         int dropped = MPMAX(0, p->packets_without_output - 1);
         p->attempt_framedrops = MPMAX(0, p->attempt_framedrops - dropped);
         p->dropped_frames += dropped;
     }
     pthread_mutex_unlock(&p->cache_lock);
+
+    if (p->decoded_coverart.type) {
+        mp_filter_internal_mark_progress(p->decf);
+        return;
+    }
 
     p->packets_without_output = 0;
 
@@ -1173,7 +1186,7 @@ struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
     mp_filter_add_pin(public_f, MP_PIN_OUT, "out");
 
     if (p->header->type == STREAM_VIDEO) {
-        p->log = mp_log_new(p, public_f->log, "!vd");
+        p->log = mp_log_new(p, parent->global->log, "!vd");
 
         p->fps = src->codec->fps;
 
@@ -1187,7 +1200,7 @@ struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
 
         p->queue_opts = p->opts->vdec_queue_opts;
     } else if (p->header->type == STREAM_AUDIO) {
-        p->log = mp_log_new(p, public_f->log, "!ad");
+        p->log = mp_log_new(p, parent->global->log, "!ad");
         p->queue_opts = p->opts->adec_queue_opts;
     } else {
         goto error;
@@ -1266,6 +1279,7 @@ void lavc_process(struct mp_filter *f, struct lavc_state *state,
         if (!state->eof_returned)
             mp_pin_in_write(f->ppins[1], MP_EOF_FRAME);
         state->eof_returned = true;
+        state->packets_sent = false;
     } else if (ret_recv == AVERROR(EAGAIN)) {
         // Need to feed a packet.
         frame = mp_pin_out_read(f->ppins[0]);
@@ -1279,6 +1293,11 @@ void lavc_process(struct mp_filter *f, struct lavc_state *state,
                 mp_filter_internal_mark_failed(f);
             }
             return;
+        } else if (!state->packets_sent) {
+            // EOF only; just return it, without requiring send/receive to
+            // pass it through properly.
+            mp_pin_in_write(f->ppins[1], MP_EOF_FRAME);
+            return;
         }
         int ret_send = send(f, pkt);
         if (ret_send == AVERROR(EAGAIN)) {
@@ -1288,6 +1307,7 @@ void lavc_process(struct mp_filter *f, struct lavc_state *state,
             mp_filter_wakeup(f);
             return;
         }
+        state->packets_sent = true;
         talloc_free(pkt);
         mp_filter_internal_mark_progress(f);
     } else {

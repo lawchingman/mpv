@@ -26,6 +26,57 @@ Interface changes
 
 ::
 
+=======
+ --- mpv 0.35.1 --- (feature backport due to special circumstances)
+    - add `--vd-lavc-dr=auto` and make it the default
+ --- mpv 0.35.0 ---
+    - add the `--vo=gpu-next` video output driver, as well as the options
+      `--allow-delayed-peak-detect`, `--builtin-scalers`,
+      `--interpolation-preserve` `--lut`, `--lut-type`, `--image-lut`,
+      `--image-lut-type` and `--target-lut` along with it.
+    - add `--target-colorspace-hint`
+    - add `--tone-mapping-crosstalk`
+    - add `--tone-mapping` options `auto`, `spline` and `bt.2446a`
+    - add `--inverse-tone-mapping`
+    - add `--gamut-mapping-mode`, replacing `--gamut-clipping` and `--gamut-warning`
+    - add `--tone-mapping-mode`, replacing `--tone-mapping-desaturate` and
+      `--tone-mapping-desaturate-exponent`.
+    - add `dolbyvision` sub-parameter to `format` video filter
+    - `--sub-visibility` no longer has any effect on secondary subtitles
+    - add `film-grain` sub-parameter to `format` video filter
+    - add experimental `--vo=dmabuf-wayland` video output driver
+    - add `--x11-present` for controlling whether to use xorg's present extension
+    - add `engine` option to the `rubberband` audio filter to support the new
+      engine introduced in rubberband 3.0.0. Defaults to `finer` (new engine).
+    - add `--wayland-configure-bounds` option
+    - deprecate `--gamma-factor`
+    - deprecate `--gamma-auto`
+    - remove `--vulkan-disable-events`
+    - add `--glsl-shader-opts`
+ --- mpv 0.34.0 ---
+    - deprecate selecting by card number with `--drm-connector`, add
+      `--drm-device` which can be used instead
+    - add `--screen-name` and `--fs-screen-name` flags to allow selecting the
+      screen by its name instead of the index
+    - add `--macos-geometry-calculation` to change the rectangle used for screen
+      position and size calculation. the old behavior used the whole screen,
+      which didn't take the menu bar and Dock into account. The new default
+      behaviour includes both. To revert to the old behavior set this to
+      `whole`.
+    - add an additional optional `albumart` argument to the `video-add` command,
+      which tells mpv to load the given video as album art.
+    - undeprecate `--cache-secs` option
+    - remove `--icc-contrast` and introduce `--icc-force-contrast`. The latter
+      defaults to the equivalent of the old `--icc-contrast=inf`, and can
+      instead be used to specifically set the contrast to any value.
+    - add a `--watch-later-options` option to allow configuring which
+      options quit-watch-later saves
+    - make `current-window-scale` writeable and use it in the default input.conf
+    - add `--input-builtin-bindings` flag to control loading of built-in key
+      bindings during start-up (default: yes).
+    - add ``track-list/N/image`` sub-property
+    - remove `--opengl-restrict` option
+    - js custom-init: use filename ~~/init.js instead of ~~/.init.js (dot)
  --- mpv 0.33.0 ---
     - add `--d3d11-exclusive-fs` flag to enable D3D11 exclusive fullscreen mode
       when the player enters fullscreen.
@@ -60,7 +111,6 @@ Interface changes
       "file_error" instead for this specific event. Scripts relying on the
       "error" field for end-file will silently break at some point in the
       future.
-    - deprecate encoding mode (lack of maintainer)
     - remove deprecated --input-file option, add --input-ipc-client, which is
       vaguely a replacement of the removed option, but not the same
     - change another detail for track selection options (see --aid manpage
@@ -72,6 +122,16 @@ Interface changes
     - remove --video-sync-adrop-size option (implementation was changed, no
       replacement for what this option did)
     - undeprecate --video-sync=display-adrop
+    - deprecate legacy auto profiles (profiles starting with "extension." and
+      "protocol."). Use conditional auto profiles instead.
+    - the "subprocess" command does not connect spawned processes' stdin to
+      mpv's stdin anymore. Instead, stdin is connected to /dev/null by default.
+      To get the old behavior, set the "passthrough_stdin" argument to true.
+    - key/value list options do not accept ":" as item separator anymore,
+      only ",". This means ":" is always considered part of the value.
+    - remove deprecated --vo-vdpau-deint option
+    - add `delete-watch-later-config` command to complement
+      `write-watch-later-config`
  --- mpv 0.32.0 ---
     - change behavior when using legacy option syntax with options that start
       with two dashes (``--`` instead of a ``-``). Now, using the recommended

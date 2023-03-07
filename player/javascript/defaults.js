@@ -126,10 +126,17 @@ function dispatch_message(ev) {
 var hooks = [];  // array of callbacks, id is index+1
 
 function run_hook(ev) {
+    var state = 0;  // 0:initial, 1:deferred, 2:continued
+    function do_cont() { return state = 2, mp._hook_continue(ev.hook_id) }
+
+    function err() { return mp.msg.error("hook already continued"), undefined }
+    function usr_defer() { return state == 2 ? err() : (state = 1, true) }
+    function usr_cont()  { return state == 2 ? err() : do_cont() }
+
     var cb = ev.id > 0 && hooks[ev.id - 1];
     if (cb)
-        cb();
-    mp._hook_continue(ev.hook_id);
+        cb({ defer: usr_defer, cont: usr_cont });
+    return state == 0 ? do_cont() : true;
 }
 
 mp.add_hook = function add_hook(name, pri, fn) {
@@ -269,9 +276,18 @@ function dispatch_key_binding(name, state, key_name) {
 
 var binds_tid = 0;  // flush timer id. actual id's are always true-thy
 mp.flush_key_bindings = function flush_key_bindings() {
+    function prioritized_inputs(arr) {
+        return arr.sort(function(a, b) { return a.id - b.id })
+                  .map(function(bind) { return bind.input });
+    }
+
     var def = [], forced = [];
-    for (var n in binds)  // Array.join() will later skip undefined .input
-        (binds[n].forced ? forced : def).push(binds[n].input);
+    for (var n in binds)
+        if (binds[n].input)
+            (binds[n].forced ? forced : def).push(binds[n]);
+    // newer bindings for the same key override/hide older ones
+    def = prioritized_inputs(def);
+    forced = prioritized_inputs(forced);
 
     var sect = "input_" + mp.script_name;
     mp.commandv("define-section", sect, def.join("\n"), "default");
@@ -299,13 +315,14 @@ function add_binding(forced, key, name, fn, opts) {
         fn = name;
         name = false;
     }
-    if (!name)
-        name = "__keybinding" + next_bid++;  // new unique binding name
     var key_data = {forced: forced};
     switch (typeof opts) {  // merge opts into key_data
         case "string": key_data[opts] = true; break;
         case "object": for (var o in opts) key_data[o] = opts[o];
     }
+    key_data.id = next_bid++;
+    if (!name)
+        name = "__keybinding" + key_data.id;  // new unique binding name
 
     if (key_data.complex) {
         mp.register_script_message(name, function msg_cb() {
@@ -656,6 +673,12 @@ mp.get_script_file = function() { return mp.script_file };
 mp.get_script_directory = function() { return mp.script_path };
 mp.get_time = function() { return mp.get_time_ms() / 1000 };
 mp.utils.getcwd = function() { return mp.get_property("working-directory") };
+mp.utils.getpid = function() { return mp.get_property_number("pid") }
+mp.utils.get_user_path =
+    function(p) { return mp.command_native(["expand-path", String(p)]) };
+mp.get_mouse_pos = function() { return mp.get_property_native("mouse-pos") };
+mp.utils.write_file = mp.utils._write_file.bind(null, false);
+mp.utils.append_file = mp.utils._write_file.bind(null, true);
 mp.dispatch_event = dispatch_event;
 mp.process_timers = process_timers;
 mp.notify_idle_observers = notify_idle_observers;
@@ -740,7 +763,7 @@ g.mp_event_loop = function mp_event_loop() {
             wait = 0;  // poll the next one
         } else {
             wait = process_timers() / 1000;
-            if (wait != 0) {
+            if (wait != 0 && iobservers.length) {
                 notify_idle_observers();  // can add timers -> recalculate wait
                 wait = peek_timers_wait() / 1000;
             }
@@ -748,9 +771,12 @@ g.mp_event_loop = function mp_event_loop() {
     } while (mp.keep_running);
 };
 
-})(this)
 
-try {
-    // let the user extend us, e.g. for updating mp.module_paths
-    require("~~/.init");
-} catch(e) {}
+// let the user extend us, e.g. by adding items to mp.module_paths
+var initjs = mp.find_config_file("init.js");  // ~~/init.js
+if (initjs)
+    require(initjs.slice(0, -3));  // remove ".js"
+else if ((initjs = mp.find_config_file(".init.js")))
+    mp.msg.warn("Use init.js instead of .init.js (ignoring " + initjs + ")");
+
+})(this)

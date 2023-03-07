@@ -98,6 +98,7 @@ struct m_geometry {
     bool xy_valid : 1, wh_valid : 1;
     bool w_per : 1, h_per : 1;
     bool x_sign : 1, y_sign : 1, x_per : 1, y_per : 1;
+    int ws; // workspace; valid if !=0
 };
 
 void m_geometry_apply(int *xpos, int *ypos, int *widw, int *widh,
@@ -144,9 +145,6 @@ struct m_obj_list {
     const char *aliases[5][2];
     // Allow a trailing ",", which adds an entry with name=""
     bool allow_trailer;
-    // Allow unknown entries, for which a dummy entry is inserted, and whose
-    // options are skipped and ignored.
-    bool allow_unknown_entries;
     // Callback to test whether an unknown entry should be allowed. (This can
     // be useful if adding them as explicit entries is too much work.)
     bool (*check_unknown_entry)(const char *name);
@@ -188,9 +186,15 @@ struct m_opt_choice_alternatives {
 const char *m_opt_choice_str(const struct m_opt_choice_alternatives *choices,
                              int value);
 
-// For OPT_STRING_VALIDATE(). Behaves like m_option_type.parse().
+// Validator function signatures. Required to properly type the param value.
+typedef int (*m_opt_generic_validate_fn)(struct mp_log *log, const m_option_t *opt,
+                                         struct bstr name, void *value);
+
 typedef int (*m_opt_string_validate_fn)(struct mp_log *log, const m_option_t *opt,
-                                        struct bstr name, struct bstr param);
+                                        struct bstr name, const char **value);
+typedef int (*m_opt_int_validate_fn)(struct mp_log *log, const m_option_t *opt,
+                                     struct bstr name, const int *value);
+
 
 // m_option.priv points to this if OPT_SUBSTRUCT is used
 struct m_sub_options {
@@ -269,6 +273,9 @@ struct m_option_type {
 
     // Parse the data from a string.
     /** It is the only required function, all others can be NULL.
+     *  Generally should not be called directly outside of the options module,
+     *  but instead through \ref m_option_parse which calls additional option
+     *  specific callbacks during the process.
      *
      *  \param log for outputting parser error or help messages
      *  \param opt The option that is parsed.
@@ -383,6 +390,12 @@ struct m_option {
     // Print a warning when this option is used (for options with no direct
     // replacement.)
     const char *deprecation_message;
+
+    // Optional function that validates a param value for this option.
+    m_opt_generic_validate_fn validate;
+
+    // Optional function that displays help. Will replace type-specific help.
+    int (*help)(struct mp_log *log, const m_option_t *opt, struct bstr name);
 };
 
 char *format_file_size(int64_t size);
@@ -416,10 +429,10 @@ char *format_file_size(int64_t size);
 #define UPDATE_SCREENSAVER      (1 << 16) // --stop-screensaver
 #define UPDATE_VOL              (1 << 17) // softvol related options
 #define UPDATE_LAVFI_COMPLEX    (1 << 18) // --lavfi-complex
-#define UPDATE_VO_RESIZE        (1 << 19) // --android-surface-size
 #define UPDATE_HWDEC            (1 << 20) // --hwdec
 #define UPDATE_DVB_PROG         (1 << 21) // some --dvbin-...
-#define UPDATE_OPT_LAST         (1 << 21)
+#define UPDATE_SUB_HARD         (1 << 22) // subtitle opts. that need full reinit
+#define UPDATE_OPT_LAST         (1 << 22)
 
 // All bits between _FIRST and _LAST (inclusive)
 #define UPDATE_OPTS_MASK \
@@ -489,12 +502,13 @@ char *format_file_size(int64_t size);
 
 char *m_option_strerror(int code);
 
-// Helper to parse options, see \ref m_option_type::parse.
-static inline int m_option_parse(struct mp_log *log, const m_option_t *opt,
-                                 struct bstr name, struct bstr param, void *dst)
-{
-    return opt->type->parse(log, opt, name, param, dst);
-}
+// Base function to parse options. Includes calling help and validation
+// callbacks. Only when this functionality is for some reason required to not
+// happen should the parse function pointer be utilized by itself.
+//
+// See \ref m_option_type::parse.
+int m_option_parse(struct mp_log *log, const m_option_t *opt,
+                   struct bstr name, struct bstr param, void *dst);
 
 // Helper to print options, see \ref m_option_type::print.
 static inline char *m_option_print(const m_option_t *opt, const void *val_ptr)
@@ -660,9 +674,15 @@ extern const char m_option_path_separator;
 #define OPT_CHANNELS(field) \
     OPT_TYPED_FIELD(m_option_type_channels, struct m_channels, field)
 
+#define OPT_INT_VALIDATE(field, validate_fn) \
+    OPT_TYPED_FIELD(m_option_type_int, int, field), \
+    .validate = (m_opt_generic_validate_fn) \
+        MP_EXPECT_TYPE(m_opt_int_validate_fn, validate_fn)
+
 #define OPT_STRING_VALIDATE(field, validate_fn) \
     OPT_TYPED_FIELD(m_option_type_string, char*, field), \
-    .priv = MP_EXPECT_TYPE(m_opt_string_validate_fn, validate_fn)
+    .validate = (m_opt_generic_validate_fn) \
+        MP_EXPECT_TYPE(m_opt_string_validate_fn, validate_fn)
 
 #define M_CHOICES(...) \
     .priv = (void *)&(const struct m_opt_choice_alternatives[]){ __VA_ARGS__, {0}}

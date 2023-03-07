@@ -21,6 +21,46 @@ in the list.
 
 Available video output drivers are:
 
+``gpu``
+    General purpose, customizable, GPU-accelerated video output driver. It
+    supports extended scaling methods, dithering, color management, custom
+    shaders, HDR, and more.
+
+    See `GPU renderer options`_ for options specific to this VO.
+
+    By default, it tries to use fast and fail-safe settings. Use the
+    ``gpu-hq`` profile to use this driver with defaults set to high quality
+    rendering. The profile can be applied with ``--profile=gpu-hq`` and its
+    contents can be viewed with ``--show-profile=gpu-hq``.
+
+    This VO abstracts over several possible graphics APIs and windowing
+    contexts, which can be influenced using the ``--gpu-api`` and
+    ``--gpu-context`` options.
+
+    Hardware decoding over OpenGL-interop is supported to some degree. Note
+    that in this mode, some corner case might not be gracefully handled, and
+    color space conversion and chroma upsampling is generally in the hand of
+    the hardware decoder APIs.
+
+    ``gpu`` makes use of FBOs by default. Sometimes you can achieve better
+    quality or performance by changing the ``--fbo-format`` option to
+    ``rgb16f``, ``rgb32f`` or ``rgb``. Known problems include Mesa/Intel not
+    accepting ``rgb16``, Mesa sometimes not being compiled with float texture
+    support, and some macOS setups being very slow with ``rgb16`` but fast
+    with ``rgb32f``. If you have problems, you can also try enabling the
+    ``--gpu-dumb-mode=yes`` option.
+
+``gpu-next``
+    Experimental video renderer based on ``libplacebo``. This supports almost
+    the same set of features as ``--vo=gpu``. See `GPU renderer options`_ for a
+    list.
+
+    Should generally be faster and higher quality, but some features may still
+    be missing or misbehave. Expect (and report!) bugs. See here for a list of
+    known differences and bugs:
+
+    https://github.com/mpv-player/mpv/wiki/GPU-Next-vs-GPU
+
 ``xv`` (X11 only)
     Uses the XVideo extension to enable hardware-accelerated display. This is
     the most compatible VO on X, but may be low-quality, and has issues with
@@ -78,7 +118,9 @@ Available video output drivers are:
 
 ``vdpau`` (X11 only)
     Uses the VDPAU interface to display and optionally also decode video.
-    Hardware decoding is used with ``--hwdec=vdpau``.
+    Hardware decoding is used with ``--hwdec=vdpau``. Note that there is
+    absolutely no reason to use this, other than compatibility. We strongly
+    recommend that you use ``--vo=gpu`` with ``--hwdec=nvdec`` instead.
 
     .. note::
 
@@ -99,29 +141,6 @@ Available video output drivers are:
 
         Apply a noise reduction algorithm to the video (default: 0; no noise
         reduction).
-    ``--vo-vdpau-deint=<-4-4>``
-        (Deprecated. See note about ``vdpaupp``.)
-
-        Select deinterlacing mode (default: 0). In older versions (as well as
-        MPlayer/mplayer2) you could use this option to enable deinterlacing.
-        This doesn't work anymore, and deinterlacing is enabled with either
-        the ``d`` key (by default mapped to the command ``cycle deinterlace``),
-        or the ``--deinterlace`` option. Also, to select the default deint mode,
-        you should use something like ``--vf-defaults=vdpaupp:deint-mode=temporal``
-        instead of this sub-option.
-
-        0
-            Pick the ``vdpaupp`` video filter default, which corresponds to 3.
-        1
-            Show only first field.
-        2
-            Bob deinterlacing.
-        3
-            Motion-adaptive temporal deinterlacing. May lead to A/V desync
-            with slow video hardware and/or high resolution.
-        4
-            Motion-adaptive temporal deinterlacing with edge-guided spatial
-            interpolation. Needs fast video hardware.
     ``--vo-vdpau-chroma-deint``
         (Deprecated. See note about ``vdpaupp``.)
 
@@ -251,35 +270,6 @@ Available video output drivers are:
     ``--vo-direct3d-exact-backbuffer``
         Always resize the backbuffer to window size.
 
-``gpu``
-    General purpose, customizable, GPU-accelerated video output driver. It
-    supports extended scaling methods, dithering, color management, custom
-    shaders, HDR, and more.
-
-    See `GPU renderer options`_ for options specific to this VO.
-
-    By default, it tries to use fast and fail-safe settings. Use the
-    ``gpu-hq`` profile to use this driver with defaults set to high quality
-    rendering. The profile can be applied with ``--profile=gpu-hq`` and its
-    contents can be viewed with ``--show-profile=gpu-hq``.
-
-    This VO abstracts over several possible graphics APIs and windowing
-    contexts, which can be influenced using the ``--gpu-api`` and
-    ``--gpu-context`` options.
-
-    Hardware decoding over OpenGL-interop is supported to some degree. Note
-    that in this mode, some corner case might not be gracefully handled, and
-    color space conversion and chroma upsampling is generally in the hand of
-    the hardware decoder APIs.
-
-    ``gpu`` makes use of FBOs by default. Sometimes you can achieve better
-    quality or performance by changing the ``--fbo-format`` option to
-    ``rgb16f``, ``rgb32f`` or ``rgb``. Known problems include Mesa/Intel not
-    accepting ``rgb16``, Mesa sometimes not being compiled with float texture
-    support, and some OS X setups being very slow with ``rgb16`` but fast
-    with ``rgb32f``. If you have problems, you can also try enabling the
-    ``--gpu-dumb-mode=yes`` option.
-
 ``sdl``
     SDL 2.0+ Render video output driver, depending on system with or without
     hardware acceleration. Should work on all platforms supported by SDL 2.0.
@@ -296,13 +286,20 @@ Available video output drivers are:
     ``--sdl-switch-mode``
         Instruct SDL to switch the monitor video mode when going fullscreen.
 
+``dmabuf-wayland``
+    Experimental Wayland output driver designed for use with either drm stateless
+    or VA API hardware decoding. The driver is designed to avoid any GPU to CPU copies,
+    and to perform scaling and color space conversion using fixed-function hardware,
+    if available, rather than GPU shaders. This frees up GPU resources for other tasks.
+    Currently this driver is experimental and only works with the ``--hwdec=vaapi``
+    or ``hwdec=drm`` drivers;
+    OSD is also not supported. Supported compositors : Weston and Sway.
+
 ``vaapi``
     Intel VA API video output driver with support for hardware decoding. Note
     that there is absolutely no reason to use this, other than compatibility.
-    This is low quality, and has issues with OSD.
-
-    .. note:: This driver is for compatibility with crappy systems. You can
-              use vaapi hardware decoding with ``--vo=gpu`` too.
+    This is low quality, and has issues with OSD. We strongly recommend that
+    you use ``--vo=gpu`` with ``--hwdec=vaapi`` instead.
 
     The following global options are supported by this video output:
 
@@ -358,11 +355,16 @@ Available video output drivers are:
 
 ``tct``
     Color Unicode art video output driver that works on a text console.
-    Depends on support of true color by modern terminals to display the images
-    at full color range. On Windows it requires an ansi terminal such as mintty.
+    By default depends on support of true color by modern terminals to display
+    the images at full color range, but 256-colors output is also supported (see
+    below). On Windows it requires an ansi terminal such as mintty.
 
     Since mpv 0.30.0, you may need to use ``--profile=sw-fast`` to get decent
     performance.
+
+    Note: the TCT image output is not synchronized with other terminal output
+    from mpv, which can lead to broken images. The options ``--no-terminal`` or
+    ``--really-quiet`` can help with that.
 
     ``--vo-tct-algo=<algo>``
         Select how to write the pixels to the terminal.
@@ -380,6 +382,104 @@ Available video output drivers are:
 
     ``--vo-tct-256=<yes|no>`` (default: no)
         Use 256 colors - for terminals which don't support true color.
+
+``sixel``
+    Graphical output for the terminal, using sixels. Tested with ``mlterm`` and
+    ``xterm``.
+
+    Note: the Sixel image output is not synchronized with other terminal output
+    from mpv, which can lead to broken images. The option ``--really-quiet``
+    can help with that, and is recommended.
+
+    You may need to use ``--profile=sw-fast`` to get decent performance.
+
+    Note: at the time of writing, ``xterm`` does not enable sixel by default -
+    launching it as ``xterm -ti 340`` is one way to enable it. Also, ``xterm``
+    does not display images bigger than 1000x1000 pixels by default.
+
+    To render and align sixel images correctly, mpv needs to know the terminal
+    size both in cells and in pixels. By default it tries to use values which
+    the terminal reports, however, due to differences between terminals this is
+    an error-prone process which cannot be automated with certainty - some
+    terminals report the size in pixels including the padding - e.g. ``xterm``,
+    while others report the actual usable number of pixels - like ``mlterm``.
+    Additionally, they may behave differently when maximized or in fullscreen,
+    and mpv cannot detect this state using standard methods.
+
+    Sixel size and alignment options:
+
+    ``--vo-sixel-cols=<columns>``, ``--vo-sixel-rows=<rows>`` (default: 0)
+        Specify the terminal size in character cells, otherwise (0) read it
+        from the terminal, or fall back to 80x25. Note that mpv doesn't use the
+        the last row with sixel because this seems to result in scrolling.
+
+    ``--vo-sixel-width=<width>``, ``--vo-sixel-height=<height>`` (default: 0)
+        Specify the available size in pixels, otherwise (0) read it from the
+        terminal, or fall back to 320x240. Other than excluding the last line,
+        the height is also further rounded down to a multiple of 6 (sixel unit
+        height) to avoid overflowing below the designated size.
+
+    ``--vo-sixel-left=<col>``, ``--vo-sixel-top=<row>`` (default: 0)
+        Specify the position in character cells where the image starts (1 is
+        the first column or row). If 0 (default) then try to automatically
+        determine it according to the other values and the image aspect ratio
+        and zoom.
+
+    ``--vo-sixel-pad-x=<pad_x>``, ``--vo-sixel-pad-y=<pad_y>`` (default: -1)
+        Used only when mpv reads the size in pixels from the terminal.
+        Specify the number of padding pixels (on one side) which are included
+        at the size which the terminal reports. If -1 (default) then the number
+        of pixels is rounded down to a multiple of number of cells (per axis),
+        to take into account padding at the report - this only works correctly
+        when the overall padding per axis is smaller than the number of cells.
+
+    ``--vo-sixel-exit-clear=<yes|no>`` (default: yes)
+        Whether or not to clear the terminal on quit. When set to no - the last
+        sixel image stays on screen after quit, with the cursor following it.
+
+    Sixel image quality options:
+
+    ``--vo-sixel-dither=<algo>``
+        Selects the dither algorithm which libsixel should apply.
+        Can be one of the below list as per libsixel's documentation.
+
+        auto (Default)
+            Let libsixel choose the dithering method.
+        none
+            Don't diffuse
+        atkinson
+            Diffuse with Bill Atkinson's method.
+        fs
+            Diffuse with Floyd-Steinberg method
+        jajuni
+            Diffuse with Jarvis, Judice & Ninke method
+        stucki
+            Diffuse with Stucki's method
+        burkes
+            Diffuse with Burkes' method
+        arithmetic
+            Positionally stable arithmetic dither
+        xor
+            Positionally stable arithmetic xor based dither
+
+    ``--vo-sixel-fixedpalette=<yes|no>`` (default: yes)
+        Use libsixel's built-in static palette using the XTERM256 profile
+        for dither. Fixed palette uses 256 colors for dithering. Note that
+        using ``no`` (at the time of writing) will slow down ``xterm``.
+
+    ``--vo-sixel-reqcolors=<colors>`` (default: 256)
+        Has no effect with fixed palette. Set up libsixel to use required
+        number of colors for dynamic palette. This value depends on the
+        terminal emulator as well. Xterm supports 256 colors. Can set this to
+        a lower value for faster performance.
+
+    ``--vo-sixel-threshold=<threshold>`` (default: -1)
+        Has no effect with fixed palette. Defines the threshold to change the
+        palette - as percentage of the number of colors, e.g. 20 will change
+        the palette when the number of colors changed by 20%. It's a simple
+        measure to reduce the number of palette changes, because it can be slow
+        in some terminals (``xterm``). The default (-1) will choose a palette
+        on every frame and will have better quality.
 
 ``image``
     Output each frame into an image file in the current directory. Each file
@@ -418,7 +518,7 @@ Available video output drivers are:
         Specify the directory to save the image files to (default: ``./``).
 
 ``libmpv``
-    For use with libmpv direct embedding. As a special case, on OS X it
+    For use with libmpv direct embedding. As a special case, on macOS it
     is used like a normal VO within mpv (cocoa-cb). Otherwise useless in any
     other contexts.
     (See ``<mpv/render.h>``.)
@@ -472,8 +572,13 @@ Available video output drivers are:
         Select the connector to use (usually this is a monitor.) If ``<name>``
         is empty or ``auto``, mpv renders the output on the first available
         connector. Use ``--drm-connector=help`` to get a list of available
-        connectors. When using multiple graphic cards, use the ``<gpu_number>``
-        argument to disambiguate.
+        connectors. The ``<gpu_number>`` argument can be used to disambiguate
+        multiple graphic cards, but is deprecated in favor of ``--drm-device``.
+        (default: empty)
+
+    ``--drm-device=<path>``
+        Select the DRM device file to use. If specified this overrides automatic
+        card selection and any card number specified ``--drm-connector``.
         (default: empty)
 
     ``--drm-mode=<preferred|highest|N|WxH[@R]>``
@@ -510,11 +615,11 @@ Available video output drivers are:
         based, and related to the CRTC.
         (default: primary)
 
-        When using this option with the drmprime-drm hwdec interop, only the OSD
-        is rendered to this plane.
+        When using this option with the drmprime-overlay hwdec interop, only the
+        OSD is rendered to this plane.
 
     ``--drm-drmprime-video-plane=<primary|overlay|N>``
-        Select the DRM plane to use for video with the drmprime-drm hwdec
+        Select the DRM plane to use for video with the drmprime-overlay hwdec
         interop (used by e.g. the rkmpp hwdec on RockChip SoCs, and v4l2 hwdec:s
         on various other SoC:s). The plane is unused otherwise. This option
         accepts the same values as ``--drm-draw-plane``. (default: overlay)
@@ -540,16 +645,28 @@ Available video output drivers are:
     ``--drm-draw-surface-size=<[WxH]>``
         Sets the size of the surface used on the draw plane. The surface will
         then be upscaled to the current screen resolution. This option can be
-        useful when used together with the drmprime-drm hwdec interop at high
-        resolutions, as it allows scaling the draw plane (which in this case
-        only handles the OSD) down to a size the GPU can handle.
+        useful when used together with the drmprime-overlay hwdec interop at
+        high resolutions, as it allows scaling the draw plane (which in this
+        case only handles the OSD) down to a size the GPU can handle.
 
-        When used without the drmprime-drm hwdec interop this option will just
-        cause the video to get rendered at a different resolution and then
+        When used without the drmprime-overlay hwdec interop this option will
+        just cause the video to get rendered at a different resolution and then
         scaled to screen size.
 
         Note: this option is only available with DRM atomic support.
         (default: display resolution)
+
+    ``--drm-vrr-enabled=<no|yes|auto>``
+        Toggle use of Variable Refresh Rate (VRR), aka Freesync or Adaptive Sync
+        on compatible systems. VRR allows for the display to be refreshed at any
+        rate within a range (usually ~40Hz-60Hz for 60Hz displays). This can help
+        with playback of 24/25/50fps content. Support depends on the use of a
+        compatible monitor, GPU, and a sufficiently new kernel with drivers
+        that support the feature.
+
+        :no:    Do not attempt to enable VRR. (default)
+        :yes:   Attempt to enable VRR, whether the capability is reported or not.
+        :auto:  Attempt to enable VRR if support is reported.
 
 ``mediacodec_embed`` (Android)
     Renders ``IMGFMT_MEDIACODEC`` frames directly to an ``android.view.Surface``.
@@ -560,8 +677,8 @@ Available video output drivers are:
     many of mpv's features (subtitle rendering, OSD/OSC, video filters, etc)
     are not available with this driver.
 
-    To use hardware decoding with ``--vo=gpu`` instead, use
-    ``--hwdec=mediacodec-copy`` along with ``--gpu-context=android``.
+    To use hardware decoding with ``--vo=gpu`` instead, use ``--hwdec=mediacodec``
+    or ``mediacodec-copy`` along with ``--gpu-context=android``.
 
 ``wlshm`` (Wayland only)
     Shared memory video output driver without hardware acceleration that works

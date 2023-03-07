@@ -14,7 +14,7 @@ in the list.
 
     See ``--ao=help`` for a list of compiled-in audio output drivers. The
     driver ``--ao=alsa`` is preferred. ``--ao=pulse`` is preferred on systems
-    where PulseAudio is used.
+    where PulseAudio is used. On BSD systems, ``--ao=oss`` is preferred.
 
 Available audio output drivers are:
 
@@ -30,10 +30,14 @@ Available audio output drivers are:
         explicitly reject multichannel output, as there is no way to detect
         whether a certain channel layout is actually supported.
 
-        You can also try `using the upmix plugin <http://git.io/vfuAy>`_.
+        You can also try `using the upmix plugin
+        <https://github.com/mpv-player/mpv/wiki/ALSA-Surround-Sound-and-Upmixing>`_.
         This setup enables multichannel audio on the ``default`` device
         with automatic upmixing with shared access, so playing stereo
         and multichannel audio at the same time will work as expected.
+
+``oss``
+    OSS audio output driver
 
 ``jack``
     JACK (Jack Audio Connection Kit) audio output driver.
@@ -65,8 +69,8 @@ Available audio output drivers are:
         mode is probably not very useful, other than for debugging or when used
         with fixed setups.
 
-``coreaudio`` (Mac OS X only)
-    Native Mac OS X audio output driver using AudioUnits and the CoreAudio
+``coreaudio`` (macOS only)
+    Native macOS audio output driver using AudioUnits and the CoreAudio
     sound server.
 
     Automatically redirects to ``coreaudio_exclusive`` when playing compressed
@@ -92,12 +96,12 @@ Available audio output drivers are:
         extreme care.
 
 
-``coreaudio_exclusive`` (Mac OS X only)
-    Native Mac OS X audio output driver using direct device access and
+``coreaudio_exclusive`` (macOS only)
+    Native macOS audio output driver using direct device access and
     exclusive mode (bypasses the sound server).
 
 ``openal``
-    OpenAL audio output driver. This is broken and does not work.
+    OpenAL audio output driver.
 
     ``--openal-num-buffers=<2-128>``
         Specify the number of audio buffers to use. Lower values are better for
@@ -109,9 +113,7 @@ Available audio output drivers are:
 
     ``--openal-direct-channels=<yes|no>``
         Enable OpenAL Soft's direct channel extension when available to avoid
-        tinting the sound with ambisonics or HRTF.
-        Channels are dropped when when they are not available as downmixing
-        will be disabled. Default: no.
+        tinting the sound with ambisonics or HRTF. Default: yes.
 
 ``pulse``
     PulseAudio audio output driver
@@ -143,6 +145,22 @@ Available audio output drivers are:
         Allow mpv to use PulseAudio even if the sink is suspended (default: no).
         Can be useful if PulseAudio is running as a bridge to jack and mpv has its sink-input set to the one jack is using.
 
+``pipewire``
+    PipeWire audio output driver
+
+    The following global options are supported by this audio output:
+
+    ``--pipewire-buffer=<1-2000|native>``
+        Set the audio buffer size in milliseconds. A higher value buffers
+        more data, and has a lower probability of buffer underruns. A smaller
+        value makes the audio stream react faster, e.g. to playback speed
+        changes.
+
+    ``--pipewire-remote=<remote>``
+        Specify the PipeWire remote daemon name to connect to via local UNIX
+        sockets.
+        An empty <remote> string uses the default remote named ``pipewire-0``.
+
 ``sdl``
     SDL 1.2+ audio output driver. Should work on any platform supported by SDL
     1.2, but may require the ``SDL_AUDIODRIVER`` environment variable to be set
@@ -159,10 +177,6 @@ Available audio output drivers are:
         sound system. Playing a file with ``-v`` will show the requested and
         obtained exact buffer size. A value of 0 selects the sound system
         default.
-
-    ``--sdl-bufcnt=<count>``
-        Sets the number of extra audio buffers in mpv. Usually needs not be
-        changed.
 
 ``null``
     Produces no audio output but maintains video playback speed. You can use
@@ -219,6 +233,12 @@ Available audio output drivers are:
         Append to the file, instead of overwriting it. Always use this with the
         ``no-waveheader`` option - with ``waveheader`` it's broken, because
         it will write a WAVE header every time the file is opened.
+
+``sndio``
+    Audio output to the OpenBSD sndio sound system
+
+    (Note: only supports mono, stereo, 4.0, 5.1 and 7.1 channel
+    layouts.)
 
 ``wasapi``
     Audio output to the Windows Audio Session API.

@@ -39,9 +39,15 @@ LIRC support - configure remotes as input devices instead).
 
 See the ``--input-`` options for ways to customize it.
 
-The following listings are not necessarily complete. See ``etc/input.conf`` for
-a list of default bindings. User ``input.conf`` files and Lua scripts can
-define additional key bindings.
+The following listings are not necessarily complete. See ``etc/input.conf``
+in the mpv source files for a list of default bindings. User ``input.conf``
+files and Lua scripts can define additional key bindings.
+
+See `COMMAND INTERFACE`_ and `Key names`_ sections for more details on
+configuring keybindings.
+
+See also ``--input-test`` for interactive binding details by key, and the
+`stats`_ built-in script for key bindings list (including print to terminal).
 
 Keyboard Control
 ----------------
@@ -104,7 +110,8 @@ q
 
 Q
     Like ``q``, but store the current playback position. Playing the same file
-    later will resume at the old playback position if possible.
+    later will resume at the old playback position if possible. See
+    `RESUMING PLAYBACK`_.
 
 / and *
     Decrease/increase volume.
@@ -120,6 +127,9 @@ m
 
 \#
     Cycle through the available audio tracks.
+
+E
+    Cycle through the available Editions.
 
 f
     Toggle fullscreen (see also ``--fs``).
@@ -158,6 +168,9 @@ L
 
 Ctrl + and Ctrl -
     Adjust audio delay (A/V sync) by +/- 0.1 seconds.
+
+Shift+g and Shift+f
+    Adjust subtitle font size by +/- 10%.
 
 u
     Switch between applying no style overrides to SSA/ASS subtitles, and
@@ -224,7 +237,7 @@ i and I
     `STATS`_ for more information.
 
 del
-    Cycles visibility between never / auto (mouse-move) / always
+    Cycle OSC visibility between never / auto (mouse-move) / always
 
 \`
     Show the console. (ESC closes it again. See `CONSOLE`_.)
@@ -244,16 +257,16 @@ corresponding adjustment.)
 7 and 8
     Adjust saturation.
 
-Alt+0 (and command+0 on OSX)
+Alt+0 (and command+0 on macOS)
     Resize video window to half its original size.
 
-Alt+1 (and command+1 on OSX)
+Alt+1 (and command+1 on macOS)
     Resize video window to its original size.
 
-Alt+2 (and command+2 on OSX)
+Alt+2 (and command+2 on macOS)
     Resize video window to double its original size.
 
-command + f (OSX only)
+command + f (macOS only)
     Toggle fullscreen (see also ``--fs``).
 
 (The following keys are valid if you have a keyboard with multimedia keys.)
@@ -387,6 +400,9 @@ It is started with ``%`` and has the following format::
 
     ``mpv --vf=foo:option1=%`expr length "$NAME"`%"$NAME" test.avi``
 
+Note: where applicable with JSON-IPC, ``%n%`` is the length in UTF-8 bytes,
+after decoding the JSON data.
+
 Suboptions passed to the client API are also subject to escaping. Using
 ``mpv_set_option_string()`` is exactly like passing ``--name=data`` to the
 command line (but without shell processing of the string). Some options
@@ -424,21 +440,28 @@ need to escape special characters. To work this around, the path can be
 additionally wrapped in the fixed-length syntax, e.g. ``%n%string_of_length_n``
 (see above).
 
-Some mpv options interpret paths starting with ``~``. Currently, the prefix
-``~~/`` expands to the mpv configuration directory (usually ``~/.config/mpv/``).
+Some mpv options interpret paths starting with ``~``.
+Currently, the prefix ``~~home/`` expands to the mpv configuration directory
+(usually ``~/.config/mpv/``).
 ``~/`` expands to the user's home directory. (The trailing ``/`` is always
 required.) The following paths are currently recognized:
 
 ================ ===============================================================
 Name             Meaning
 ================ ===============================================================
-``~~/``          mpv config dir (for example ``~/.config/mpv/``)
+``~~/``          If the subpath exists in any of the mpv's config directories
+                 the path of the existing file/dir is returned. Otherwise this
+                 is equivalent to ``~~home/``.
+                 Note that if --no-config is used ``~~/foobar`` will resolve to
+                 ``foobar`` which can be unexpected.
 ``~/``           user home directory root (similar to shell, ``$HOME``)
-``~~home/``      same as ``~~/``
+``~~home/``      mpv config dir (for example ``~/.config/mpv/``)
 ``~~global/``    the global config path, if available (not on win32)
-``~~osxbundle/`` the OSX bundle resource path (OSX only)
-``~~desktop/``   the path to the desktop (win32, OSX)
-``~~old_home``   do not use
+``~~osxbundle/`` the macOS bundle resource path (macOS only)
+``~~desktop/``   the path to the desktop (win32, macOS)
+``~~exe_dir/``   win32 only: the path to the directory containing the exe (for
+                 config file purposes; ``$MPV_HOME`` overrides it)
+``~~old_home/``  do not use
 ================ ===============================================================
 
 
@@ -506,7 +529,7 @@ They support the following operations:
 ============= ===============================================
 Suffix        Meaning
 ============= ===============================================
--set          Set a list of items (using the list separator, interprets escapes)
+-set          Set a list of items (using the list separator, escaped with backslash)
 -append       Append single item (does not interpret escapes)
 -add          Append 1 or more items (same syntax as -set)
 -pre          Prepend 1 or more items (same syntax as -set)
@@ -539,6 +562,13 @@ Suffix        Meaning
 
 Keys are unique within the list. If an already present key is set, the existing
 key is removed before the new value is appended.
+
+If you want to pass a value without interpreting it for escapes or ``,``, it is
+recommended to use the ``-add`` variant. When using libmpv, prefer using
+``MPV_FORMAT_NODE_MAP``; when using a scripting backend or the JSON IPC, use an
+appropriate structured data type.
+
+Prior to mpv 0.33, ``:`` was also recognized as separator by ``-set``.
 
 Filter options
 ~~~~~~~~~~~~~~
@@ -691,11 +721,211 @@ or at runtime with the ``apply-profile <name>`` command.
         # you can also include other profiles
         profile=big-cache
 
+Runtime profiles
+----------------
 
-Auto profiles
--------------
+Profiles can be set at runtime with ``apply-profile`` command. Since this
+operation is "destructive" (every item in a profile is simply set as an
+option, overwriting the previous value), you can't just enable and disable
+profiles again.
 
-Some profiles are loaded automatically. The following example demonstrates this:
+As a partial remedy, there is a way to make profiles save old option values
+before overwriting them with the profile values, and then restoring the old
+values at a later point using ``apply-profile <profile-name> restore``.
+
+This can be enabled with the ``profile-restore`` option, which takes one of
+the following options:
+
+    ``default``
+        Does nothing, and nothing can be restored (default).
+
+    ``copy``
+        When applying a profile, copy the old values of all profile options to a
+        backup before setting them from the profile. These options are reset to
+        their old values using the backup when restoring.
+
+        Every profile has its own list of backed up values. If the backup
+        already exists (e.g. if ``apply-profile name`` was called more than
+        once in a row), the existing backup is no changed. The restore operation
+        will remove the backup.
+
+        It's important to know that restoring does not "undo" setting an option,
+        but simply copies the old option value. Consider for example ``vf-add``,
+        appends an entry to ``vf``. This mechanism will simply copy the entire
+        ``vf`` list, and does _not_ execute the inverse of ``vf-add`` (that
+        would be ``vf-remove``) on restoring.
+
+        Note that if a profile contains recursive profiles (via the ``profile``
+        option), the options in these recursive profiles are treated as if they
+        were part of this profile. The referenced profile's backup list is not
+        used when creating or using the backup. Restoring a profile does not
+        restore referenced profiles, only the options of referenced profiles (as
+        if they were part of the main profile).
+
+    ``copy-equal``
+        Similar to ``copy``, but restore an option only if it has the same value
+        as the value effectively set by the profile. This tries to deal with
+        the situation when the user does not want the option to be reset after
+        interactively changing it.
+
+.. admonition:: Example
+
+    ::
+
+        [something]
+        profile-restore=copy-equal
+        vf-add=rotate=PI/2  # rotate by 90 degrees
+
+    Then running these commands will result in behavior as commented:
+
+    ::
+
+        set vf vflip
+        apply-profile something
+        vf add hflip
+        apply-profile something
+        # vf == vflip,rotate=PI/2,hflip,rotate=PI/2
+        apply-profile something restore
+        # vf == vflip
+
+Conditional auto profiles
+-------------------------
+
+Profiles which have the ``profile-cond`` option set are applied automatically
+if the associated condition matches (unless auto profiles are disabled). The
+option takes a string, which is interpreted as Lua condition. If evaluating the
+expression returns true, the profile is applied, if it returns false, it is
+ignored. This Lua code execution is not sandboxed.
+
+Any variables in condition expressions can reference properties. If an
+identifier is not already defined by Lua or mpv, it is interpreted as property.
+For example, ``pause`` would return the current pause status. You cannot
+reference properties with ``-`` this way since that would denote a subtraction,
+but if the variable name contains any ``_`` characters, they are turned into
+``-``. For example, ``playback_time`` would return the property
+``playback-time``.
+
+A more robust way to access properties is using ``p.property_name`` or
+``get("property-name", default_value)``. The automatic variable to property
+magic will break if a new identifier with the same name is introduced (for
+example, if a function named ``pause()`` were added, ``pause`` would return a
+function value instead of the value of the ``pause`` property).
+
+Note that if a property is not available, it will return ``nil``, which can
+cause errors if used in expressions. These are logged in verbose mode, and the
+expression is considered to be false.
+
+Whenever a property referenced by a profile condition changes, the condition
+is re-evaluated. If the return value of the condition changes from false or
+error to true, the profile is applied.
+
+This mechanism tries to "unapply" profiles once the condition changes from true
+to false. If you want to use this, you need to set ``profile-restore`` for the
+profile. Another possibility it to create another profile with an inverse
+condition to undo the other profile.
+
+Recursive profiles can be used. But it is discouraged to reference other
+conditional profiles in a conditional profile, since this can lead to tricky
+and unintuitive behavior.
+
+.. admonition:: Example
+
+    Make only HD video look funny:
+
+    ::
+
+        [something]
+        profile-desc=HD video sucks
+        profile-cond=width >= 1280
+        hue=-50
+
+    If you want the profile to be reverted if the condition goes to false again,
+    you can set ``profile-restore``:
+
+    ::
+
+        [something]
+        profile-desc=Mess up video when entering fullscreen
+        profile-cond=fullscreen
+        profile-restore=copy
+        vf-add=rotate=PI/2  # rotate by 90 degrees
+
+    This appends the ``rotate`` filter to the video filter chain when entering
+    fullscreen. When leaving fullscreen, the ``vf`` option is set to the value
+    it had before entering fullscreen. Note that this would also remove any
+    other filters that were added during fullscreen mode by the user. Avoiding
+    this is trickier, and could for example be solved by adding a second profile
+    with an inverse condition and operation:
+
+    ::
+
+        [something]
+        profile-cond=fullscreen
+        vf-add=@rot:rotate=PI/2
+
+        [something-inv]
+        profile-cond=not fullscreen
+        vf-remove=@rot
+
+.. warning::
+
+    Every time an involved property changes, the condition is evaluated again.
+    If your condition uses ``p.playback_time`` for example, the condition is
+    re-evaluated approximately on every video frame. This is probably slow.
+
+This feature is managed by an internal Lua script. Conditions are executed as
+Lua code within this script. Its environment contains at least the following
+things:
+
+``(function environment table)``
+    Every Lua function has an environment table. This is used for identifier
+    access. There is no named Lua symbol for it; it is implicit.
+
+    The environment does "magic" accesses to mpv properties. If an identifier
+    is not already defined in ``_G``, it retrieves the mpv property of the same
+    name. Any occurrences of ``_`` in the name are replaced with ``-`` before
+    reading the property. The returned value is as retrieved by
+    ``mp.get_property_native(name)``. Internally, a cache of property values,
+    updated by observing the property is used instead, so properties that are
+    not observable will be stuck at the initial value forever.
+
+    If you want to access properties, that actually contain ``_`` in the name,
+    use ``get()`` (which does not perform transliteration).
+
+    Internally, the environment table has a ``__index`` meta method set, which
+    performs the access logic.
+
+``p``
+    A "magic" table similar to the environment table. Unlike the latter, this
+    does not prefer accessing variables defined in ``_G`` - it always accesses
+    properties.
+
+``get(name [, def])``
+    Read a property and return its value. If the property value is ``nil`` (e.g.
+    if the property does not exist), ``def`` is returned.
+
+    This is superficially similar to ``mp.get_property_native(name)``. An
+    important difference is that this accesses the property cache, and enables
+    the change detection logic (which is essential to the dynamic runtime
+    behavior of auto profiles). Also, it does not return an error value as
+    second return value.
+
+    The "magic" tables mentioned above use this function as backend. It does not
+    perform the ``_`` transliteration.
+
+In addition, the same environment as in a blank mpv Lua script is present. For
+example, ``math`` is defined and gives access to the Lua standard math library.
+
+.. warning::
+
+    This feature is subject to change indefinitely. You might be forced to
+    adjust your profiles on mpv updates.
+
+Legacy auto profiles
+--------------------
+
+Some profiles are loaded automatically using a legacy mechanism. The following
+example demonstrates this:
 
 .. admonition:: Auto profile loading
 
@@ -703,14 +933,15 @@ Some profiles are loaded automatically. The following example demonstrates this:
 
         [extension.mkv]
         profile-desc="profile for .mkv files"
-        vf=flip
+        vf=vflip
 
 The profile name follows the schema ``type.name``, where type can be
 ``protocol`` for the input/output protocol in use (see ``--list-protocols``),
 and ``extension`` for the extension of the path of the currently played file
 (*not* the file format).
 
-This feature is very limited, and there are no other auto profiles.
+This feature is very limited, and is considered soft-deprecated. Use conditional
+auto profiles.
 
 Using mpv from other programs or scripts
 ========================================
@@ -790,7 +1021,7 @@ listed.
 - ``AV:`` or ``V:`` (video only) or ``A:`` (audio only)
 - The current time position in ``HH:MM:SS`` format (``playback-time`` property)
 - The total file duration (absent if unknown) (``duration`` property)
-- Playback speed, e.g. `` x2.0``. Only visible if the speed is not normal. This
+- Playback speed, e.g. ``x2.0``. Only visible if the speed is not normal. This
   is the user-requested speed, and not the actual speed  (usually they should
   be the same, unless playback is too slow). (``speed`` property.)
 - Playback percentage, e.g. ``(13%)``. How much of the file has been played.
@@ -864,6 +1095,33 @@ Additional options that can be tried:
 - without audio ``--framedrop=no --speed=1.01`` may help for live sources
   (results can be mixed)
 
+RESUMING PLAYBACK
+=================
+
+mpv is capable of storing the playback position of the currently playing file
+and resume from there the next time that file is played. This is done with the
+commands ``quit-watch-later`` (bound to Shift+Q by default) and
+``write-watch-later-config``, and with the ``--save-position-on-quit`` option.
+
+The difference between always quitting with a key bound to ``quit-watch-later``
+and using ``--save-position-on-quit`` is that the latter will save the playback
+position even when mpv is closed with a method other than a keybinding, for
+example if you shutdown your system without closing mpv beforehand, unless of
+course mpv is terminated abruptly and doesn't have the time to save (e.g. with
+the KILL Unix signal).
+
+mpv also stores options other than the playback position when they have been
+modified after playback began, for example the volume and the fullscreen state,
+and restores their values the next time the file is played. Which options are
+saved can be configured with the ``--watch-later-options`` option.
+
+When playing multiple playlist entries, mpv checks if one them has a resume
+config file associated, and if it finds one it restarts playback from it. For
+example, if you use ``quit-watch-later`` on the 5th episode of a show, and
+later play all the episodes, mpv will automatically resume playback from
+episode 5.
+
+More options to configure this functionality are listed in `Watch Later`_.
 
 PROTOCOLS
 =========
@@ -993,6 +1251,34 @@ PROTOCOLS
 
     Stitch together parts of multiple files and play them.
 
+``slice://start[-end]@URL``
+
+    Read a slice of a stream.
+
+    ``start`` and ``end`` represent a byte range and accept
+    suffixes such as ``KiB`` and ``MiB``. ``end`` is optional.
+
+    if ``end`` starts with ``+``, it is considered as offset from ``start``.
+
+    Only works with seekable streams.
+
+    Examples::
+
+      mpv slice://1g-2g@cap.ts
+
+      This starts reading from cap.ts after seeking 1 GiB, then
+      reads until reaching 2 GiB or end of file.
+
+      mpv slice://1g-+2g@cap.ts
+
+      This starts reading from cap.ts after seeking 1 GiB, then
+      reads until reaching 3 GiB or end of file.
+
+      mpv slice://100m@appending://cap.ts
+
+      This starts reading from cap.ts after seeking 100MiB, then
+      reads until end of file.
+
 ``null://``
 
     Simulate an empty file. If opened for writing, it will discard all data.
@@ -1021,7 +1307,7 @@ Currently this happens only in the following cases:
   or file associations provided by desktop environments)
 - if started from explorer.exe on Windows (technically, if it was started on
   Windows, and all of the stdout/stderr/stdin handles are unset)
-- started out of the bundle on OSX
+- started out of the bundle on macOS
 - if you manually use ``--player-operation-mode=pseudo-gui`` on the command line
 
 This mode applies options from the builtin profile ``builtin-pseudo-gui``, but
@@ -1054,6 +1340,30 @@ works like in older mpv releases:
     normal way. This is deprecated. In future mpv releases, the behavior might
     change, and not apply your additional settings, and/or use a different
     profile name.
+
+Linux desktop issues
+====================
+
+This subsection describes common problems on the Linux desktop. None of these
+problems exist on systems like Windows or macOS.
+
+Disabling Screensaver
+---------------------
+
+By default, mpv tries to disable the OS screensaver during playback (only if
+a VO using the OS GUI API is active). ``--stop-screensaver=no`` disables this.
+
+A common problem is that Linux desktop environments ignore the standard
+screensaver APIs on which mpv relies. In particular, mpv uses the Screen Saver
+extension (XSS) on X11, and the idle-inhibit protocol on Wayland.
+
+GNOME in particular still ignores the idle-inhibit protocol, and has its own
+D-Bus interfaces for display power management, which mpv does not support.
+
+Before mpv 0.33.0, the X11 backend ran ``xdg-screensaver reset`` in 10 second
+intervals when not paused in order to support screensaver inhibition in these
+environments. This functionality was removed in 0.33.0, but it is possible to
+call the ``xdg-screensaver`` command line program from a user script instead.
 
 
 .. include:: options.rst
@@ -1223,6 +1533,28 @@ For Windows-specifics, see `FILES ON WINDOWS`_ section.
     in default configuration will use ``/usr/local/etc/mpv/`` as config
     directory, while most Linux distributions will set it to ``/etc/mpv/``).
 
+``~/.config/mpv``
+    The standard configuration directory. This can be overridden by environment
+    variables, in ascending order:
+
+    :1: If ``$XDG_CONFIG_HOME`` is set, then the derived configuration directory
+        will be ``$XDG_CONFIG_HOME/mpv``.
+    :2: If ``$MPV_HOME`` is set, then the derived configuration directory will be
+       ``$MPV_HOME``.
+
+    If this directory, nor the original configuration directory (see below) do
+    not exist, mpv tries to create this directory automatically.
+
+``~/.mpv/``
+    The original (pre 0.5.0) configuration directory. It will continue to be
+    read if present.
+
+    If both this directory and the standard configuration directory are
+    present, configuration will be read from both with the standard
+    configuration directory content taking precedence. However, you should
+    fully migrate to the standard directory and a warning will be shown in
+    this situation.
+
 ``~/.config/mpv/mpv.conf``
     mpv user settings (see `CONFIGURATION FILES`_ section)
 
@@ -1273,12 +1605,6 @@ For Windows-specifics, see `FILES ON WINDOWS`_ section.
 
     Other files in this directory are specific to the corresponding scripts
     as well, and the mpv core doesn't touch them.
-
-Note that the environment variables ``$XDG_CONFIG_HOME`` and ``$MPV_HOME`` can
-override the standard directory ``~/.config/mpv/``.
-
-Also, the old config location at ``~/.mpv/`` is still read, and if the XDG
-variant does not exist, will still be preferred.
 
 FILES ON WINDOWS
 ================

@@ -92,24 +92,6 @@ struct seek_params {
     unsigned flags; // MPSEEK_FLAG_*
 };
 
-enum video_sync {
-    VS_DEFAULT = 0,
-    VS_DISP_RESAMPLE,
-    VS_DISP_RESAMPLE_VDROP,
-    VS_DISP_RESAMPLE_NONE,
-    VS_DISP_ADROP,
-    VS_DISP_VDROP,
-    VS_DISP_NONE,
-    VS_NONE,
-};
-
-#define VS_IS_DISP(x) ((x) == VS_DISP_RESAMPLE ||       \
-                       (x) == VS_DISP_RESAMPLE_VDROP || \
-                       (x) == VS_DISP_RESAMPLE_NONE ||  \
-                       (x) == VS_DISP_ADROP ||          \
-                       (x) == VS_DISP_VDROP ||          \
-                       (x) == VS_DISP_NONE)
-
 // Information about past video frames that have been sent to the VO.
 struct frame_info {
     double pts;
@@ -136,6 +118,7 @@ struct track {
     char *title;
     bool default_track, forced_track, dependent_track;
     bool visual_impaired_track, hearing_impaired_track;
+    bool image;
     bool attached_picture;
     char *lang;
 
@@ -190,28 +173,33 @@ struct vo_chain {
 // Like vo_chain, for audio.
 struct ao_chain {
     struct mp_log *log;
+    struct MPContext *mpctx;
 
     bool spdif_passthrough, spdif_failed;
 
     struct mp_output_chain *filter;
 
     struct ao *ao;
-    struct mp_audio_buffer *ao_buffer;
+    struct mp_async_queue *ao_queue;
+    struct mp_filter *queue_filter;
+    struct mp_filter *ao_filter;
     double ao_resume_time;
 
-    // 1-element output frame queue.
-    struct mp_aframe *output_frame;
     bool out_eof;
-
     double last_out_pts;
+
+    double start_pts;
+    bool start_pts_known;
 
     struct track *track;
     struct mp_pin *filter_src;
     struct mp_pin *dec_src;
 
     double delay;
+    bool untimed_throttle;
 
-    bool underrun;
+    bool ao_underrun;   // last known AO state
+    bool underrun;      // for cache pause logic
 };
 
 /* Note that playback can be paused, stopped, etc. at any time. While paused,
@@ -223,7 +211,6 @@ struct ao_chain {
 enum playback_status {
     // code may compare status values numerically
     STATUS_SYNCING,     // seeking for a position to resume
-    STATUS_FILLING,     // decoding more data (so you start with full buffers)
     STATUS_READY,       // buffers full, playback can be started any time
     STATUS_PLAYING,     // normal playback
     STATUS_DRAINING,    // decoding has ended; still playing out queued buffers
@@ -291,7 +278,6 @@ typedef struct MPContext {
     // Return code to use with PT_QUIT
     int quit_custom_rc;
     bool has_quit_custom_rc;
-    char **resume_defaults;
 
     // Global file statistics
     int files_played;       // played without issues (even if stopped by user)
@@ -379,9 +365,8 @@ typedef struct MPContext {
     double last_frame_duration;
     // Video PTS, or audio PTS if video has ended.
     double playback_pts;
-    // audio stats only
-    int64_t audio_stat_start;
-    double written_audio;
+    // For logging only.
+    double logged_async_diff;
 
     int last_chapter;
 
@@ -445,7 +430,7 @@ typedef struct MPContext {
 
     struct mp_ipc_ctx *ipc_ctx;
 
-    int64_t builtin_script_ids[4];
+    int64_t builtin_script_ids[5];
 
     pthread_mutex_t abort_lock;
 
@@ -502,14 +487,16 @@ int init_audio_decoder(struct MPContext *mpctx, struct track *track);
 void reinit_audio_chain_src(struct MPContext *mpctx, struct track *track);
 void audio_update_volume(struct MPContext *mpctx);
 void audio_update_balance(struct MPContext *mpctx);
+void audio_update_media_role(struct MPContext *mpctx);
 void reload_audio_output(struct MPContext *mpctx);
+void audio_start_ao(struct MPContext *mpctx);
 
 // configfiles.c
 void mp_parse_cfgfiles(struct MPContext *mpctx);
 void mp_load_auto_profiles(struct MPContext *mpctx);
-void mp_get_resume_defaults(struct MPContext *mpctx);
 void mp_load_playback_resume(struct MPContext *mpctx, const char *file);
 void mp_write_watch_later_conf(struct MPContext *mpctx);
+void mp_delete_watch_later_conf(struct MPContext *mpctx, const char *file);
 struct playlist_entry *mp_check_playlist_resume(struct MPContext *mpctx,
                                                 struct playlist *playlist);
 
@@ -523,7 +510,8 @@ void mp_abort_trigger_locked(struct MPContext *mpctx,
                              struct mp_abort_entry *abort);
 void uninit_player(struct MPContext *mpctx, unsigned int mask);
 int mp_add_external_file(struct MPContext *mpctx, char *filename,
-                         enum stream_type filter, struct mp_cancel *cancel);
+                         enum stream_type filter, struct mp_cancel *cancel,
+                         bool cover_art);
 void mark_track_selection(struct MPContext *mpctx, int order,
                           enum stream_type type, int value);
 #define FLAG_MARK_SELECTION 1
@@ -542,7 +530,8 @@ void mp_set_playlist_entry(struct MPContext *mpctx, struct playlist_entry *e);
 void mp_play_files(struct MPContext *mpctx);
 void update_demuxer_properties(struct MPContext *mpctx);
 void print_track_list(struct MPContext *mpctx, const char *msg);
-void reselect_demux_stream(struct MPContext *mpctx, struct track *track);
+void reselect_demux_stream(struct MPContext *mpctx, struct track *track,
+                           bool refresh_only);
 void prepare_playlist(struct MPContext *mpctx, struct playlist *pl);
 void autoload_external_files(struct MPContext *mpctx, struct mp_cancel *cancel);
 struct track *select_default_track(struct MPContext *mpctx, int order,
@@ -618,6 +607,7 @@ int handle_force_window(struct MPContext *mpctx, bool force);
 void seek_to_last_frame(struct MPContext *mpctx);
 void update_screensaver_state(struct MPContext *mpctx);
 void update_ab_loop_clip(struct MPContext *mpctx);
+bool get_internal_paused(struct MPContext *mpctx);
 
 // scripting.c
 struct mp_script_args {

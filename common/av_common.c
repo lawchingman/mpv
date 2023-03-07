@@ -30,6 +30,7 @@
 
 #include "config.h"
 
+#include "audio/chmap_avchannel.h"
 #include "common/common.h"
 #include "common/msg.h"
 #include "demux/packet.h"
@@ -80,12 +81,23 @@ AVCodecParameters *mp_codec_params_to_av(struct mp_codec_params *c)
     avp->codec_id = mp_codec_to_av_codec_id(c->codec);
     avp->codec_tag = c->codec_tag;
     if (c->extradata_size) {
-        avp->extradata =
-            av_mallocz(c->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        uint8_t *extradata = c->extradata;
+        int size = c->extradata_size;
+
+        if (avp->codec_id == AV_CODEC_ID_FLAC) {
+            // ffmpeg expects FLAC extradata to be just the STREAMINFO,
+            // so grab only that (and assume it'll be the first block)
+            if (size >= 8 && !memcmp(c->extradata, "fLaC", 4)) {
+                extradata += 8;
+                size = MPMIN(34, size - 8); // FLAC_STREAMINFO_SIZE
+            }
+        }
+
+        avp->extradata = av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
         if (!avp->extradata)
             goto error;
-        avp->extradata_size = c->extradata_size;
-        memcpy(avp->extradata, c->extradata, avp->extradata_size);
+        avp->extradata_size = size;
+        memcpy(avp->extradata, extradata, size);
     }
     avp->bits_per_coded_sample = c->bits_per_coded_sample;
 
@@ -97,9 +109,14 @@ AVCodecParameters *mp_codec_params_to_av(struct mp_codec_params *c)
     avp->sample_rate = c->samplerate;
     avp->bit_rate = c->bitrate;
     avp->block_align = c->block_align;
+
+#if !HAVE_AV_CHANNEL_LAYOUT
     avp->channels = c->channels.num;
     if (!mp_chmap_is_unknown(&c->channels))
         avp->channel_layout = mp_chmap_to_lavc(&c->channels);
+#else
+    mp_chmap_to_av_layout(&avp->ch_layout, &c->channels);
+#endif
 
     return avp;
 error:
@@ -270,7 +287,7 @@ int mp_codec_to_av_codec_id(const char *codec)
         if (desc)
             id = desc->id;
         if (id == AV_CODEC_ID_NONE) {
-            AVCodec *avcodec = avcodec_find_decoder_by_name(codec);
+            const AVCodec *avcodec = avcodec_find_decoder_by_name(codec);
             if (avcodec)
                 id = avcodec->id;
         }
@@ -285,7 +302,7 @@ const char *mp_codec_from_av_codec_id(int codec_id)
     if (desc)
         name = desc->name;
     if (!name) {
-        AVCodec *avcodec = avcodec_find_decoder(codec_id);
+        const AVCodec *avcodec = avcodec_find_decoder(codec_id);
         if (avcodec)
             name = avcodec->name;
     }

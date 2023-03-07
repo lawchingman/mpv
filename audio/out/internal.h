@@ -48,12 +48,6 @@ struct ao {
     int init_flags; // AO_INIT_* flags
     bool stream_silence;        // if audio inactive, just play silence
 
-    // Set by the driver on init.
-    // This value is in complete samples (i.e. 1 for stereo means 1 sample
-    // for both channels each).
-    // Used for push based API only.
-    int period_size;
-
     // The device as selected by the user, usually using ao_device_desc.name
     // from an entry from the list returned by driver->list_devices. If the
     // default device should be used, this is set to NULL.
@@ -74,7 +68,6 @@ struct ao {
     int buffer;
     double def_buffer;
     struct buffer_state *buffer_state;
-    void *api_priv;
 };
 
 void init_buffer_pre(struct ao *ao);
@@ -83,7 +76,12 @@ bool init_buffer_post(struct ao *ao);
 struct mp_pcm_state {
     // Note: free_samples+queued_samples <= ao->device_buffer; the sum may be
     //       less if the audio API can report partial periods played, while
-    //       free_samples should be period-size aligned.
+    //       free_samples should be period-size aligned. If free_samples is not
+    //       period-size aligned, the AO thread might get into a situation where
+    //       it writes a very small number of samples in each iteration, leading
+    //       to extremely inefficient behavior.
+    //       Keep in mind that write() may write less than free_samples (or your
+    //       period size alignment) anyway.
     int free_samples;       // number of free space in ring buffer
     int queued_samples;     // number of samples to play in ring buffer
     double delay;           // total latency in seconds (includes queued_samples)
@@ -139,6 +137,9 @@ struct ao_driver {
     // first write() call is done. Encode mode uses this, and push mode
     // respects it automatically (don't use with pull mode).
     bool initially_blocked;
+    // If true, write units of entire frames. The write() call is modified to
+    // use data==mp_aframe. Useful for encoding AO only.
+    bool write_frames;
     // Init the device using ao->format/ao->channels/ao->samplerate. If the
     // device doesn't accept these parameters, you can attempt to negotiate
     // fallback parameters, and set the ao format fields accordingly.
@@ -153,6 +154,7 @@ struct ao_driver {
     //             returns success (this is intended for paused=true; if it
     //             returns false, playback continues, and the core emulates via
     //             reset(); unpausing always works)
+    //             The pausing state is also cleared by reset().
     bool (*set_pause)(struct ao *ao, bool paused);
     // pull based: start the audio callback
     // push based: start playing queued data

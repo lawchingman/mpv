@@ -10,7 +10,6 @@ struct sh_stream;
 struct mpv_global;
 struct demux_packet;
 struct mp_recorder_sink;
-
 struct dec_sub;
 struct sd;
 
@@ -38,7 +37,7 @@ struct attachment_list {
 };
 
 struct dec_sub *sub_create(struct mpv_global *global, struct sh_stream *sh,
-                           struct attachment_list *attachments);
+                           struct attachment_list *attachments, int order);
 void sub_destroy(struct dec_sub *sub);
 
 bool sub_can_preload(struct dec_sub *sub);
@@ -52,6 +51,8 @@ void sub_reset(struct dec_sub *sub);
 void sub_select(struct dec_sub *sub, bool selected);
 void sub_set_recorder_sink(struct dec_sub *sub, struct mp_recorder_sink *sink);
 void sub_set_play_dir(struct dec_sub *sub, int dir);
+bool sub_is_primary_visible(struct dec_sub *sub);
+bool sub_is_secondary_visible(struct dec_sub *sub);
 
 int sub_control(struct dec_sub *sub, enum sd_ctrl cmd, void *arg);
 

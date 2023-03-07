@@ -174,9 +174,10 @@ static int64_t mp_load_script(struct MPContext *mpctx, const char *fname)
     };
 
     talloc_free(tmp);
+    fname = NULL; // might have been freed so don't touch anymore
 
     if (!arg->client) {
-        MP_ERR(mpctx, "Failed to create client for script: %s\n", fname);
+        MP_ERR(mpctx, "Failed to create client for script: %s\n", arg->filename);
         talloc_free(arg);
         return -1;
     }
@@ -185,7 +186,7 @@ static int64_t mp_load_script(struct MPContext *mpctx, const char *fname)
     arg->log = mp_client_get_log(arg->client);
     int64_t id = mpv_client_id(arg->client);
 
-    MP_DBG(arg, "Loading %s %s...\n", backend->name, fname);
+    MP_DBG(arg, "Loading %s %s...\n", backend->name, arg->filename);
 
     if (backend->no_thread) {
         run_script(arg);
@@ -262,6 +263,8 @@ void mp_load_builtin_scripts(struct MPContext *mpctx)
     load_builtin_script(mpctx, 1, mpctx->opts->lua_load_ytdl, "@ytdl_hook.lua");
     load_builtin_script(mpctx, 2, mpctx->opts->lua_load_stats, "@stats.lua");
     load_builtin_script(mpctx, 3, mpctx->opts->lua_load_console, "@console.lua");
+    load_builtin_script(mpctx, 4, mpctx->opts->lua_load_auto_profiles,
+                        "@auto_profiles.lua");
 }
 
 bool mp_load_scripts(struct MPContext *mpctx)
@@ -333,8 +336,6 @@ static int load_run(struct mp_script_args *args)
         return -1;
     args->client = NULL; // ownership lost
 
-    // Hardcode them (according to opts.fds[]), because we want to allow clients
-    // to hardcode them if they want. Sue me.
     char *fdopt = fds[1] >= 0 ? mp_tprintf(80, "--mpv-ipc-fd=%d:%d", fds[0], fds[1])
                               : mp_tprintf(80, "--mpv-ipc-fd=%d", fds[0]);
 
@@ -346,7 +347,7 @@ static int load_run(struct mp_script_args *args)
             {.fd = 0, .src_fd = 0,},
             {.fd = 1, .src_fd = 1,},
             {.fd = 2, .src_fd = 2,},
-            // Just hope these don't step over each other (e.g. fds[1] is not
+            // Just hope these don't step over each other (e.g. fds[1] could be
             // below 4, if the std FDs are missing).
             {.fd = fds[0], .src_fd = fds[0], },
             {.fd = fds[1], .src_fd = fds[1], },

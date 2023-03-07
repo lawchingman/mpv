@@ -103,6 +103,7 @@ const struct m_opt_choice_alternatives mp_csp_light_names[] = {
 
 const struct m_opt_choice_alternatives mp_chroma_names[] = {
     {"unknown",     MP_CHROMA_AUTO},
+    {"uhd",         MP_CHROMA_TOPLEFT},
     {"mpeg2/4/h264",MP_CHROMA_LEFT},
     {"mpeg1/jpeg",  MP_CHROMA_CENTER},
     {0}
@@ -188,6 +189,8 @@ enum mp_csp_prim avcol_pri_to_mp_csp_prim(int avpri)
     case AVCOL_PRI_BT709:       return MP_CSP_PRIM_BT_709;
     case AVCOL_PRI_BT2020:      return MP_CSP_PRIM_BT_2020;
     case AVCOL_PRI_BT470M:      return MP_CSP_PRIM_BT_470M;
+    case AVCOL_PRI_SMPTE431:    return MP_CSP_PRIM_DCI_P3;
+    case AVCOL_PRI_SMPTE432:    return MP_CSP_PRIM_DISPLAY_P3;
     default:                    return MP_CSP_PRIM_AUTO;
     }
 }
@@ -242,6 +245,8 @@ int mp_csp_prim_to_avcol_pri(enum mp_csp_prim prim)
     case MP_CSP_PRIM_BT_709:     return AVCOL_PRI_BT709;
     case MP_CSP_PRIM_BT_2020:    return AVCOL_PRI_BT2020;
     case MP_CSP_PRIM_BT_470M:    return AVCOL_PRI_BT470M;
+    case MP_CSP_PRIM_DCI_P3:     return AVCOL_PRI_SMPTE431;
+    case MP_CSP_PRIM_DISPLAY_P3: return AVCOL_PRI_SMPTE432;
     default:                     return AVCOL_PRI_UNSPECIFIED;
     }
 }
@@ -288,6 +293,7 @@ enum mp_csp_prim mp_csp_guess_primaries(int width, int height)
 enum mp_chroma_location avchroma_location_to_mp(int avloc)
 {
     switch (avloc) {
+    case AVCHROMA_LOC_TOPLEFT:          return MP_CHROMA_TOPLEFT;
     case AVCHROMA_LOC_LEFT:             return MP_CHROMA_LEFT;
     case AVCHROMA_LOC_CENTER:           return MP_CHROMA_CENTER;
     default:                            return MP_CHROMA_AUTO;
@@ -297,6 +303,7 @@ enum mp_chroma_location avchroma_location_to_mp(int avloc)
 int mp_chroma_location_to_av(enum mp_chroma_location mploc)
 {
     switch (mploc) {
+    case MP_CHROMA_TOPLEFT:             return AVCHROMA_LOC_TOPLEFT;
     case MP_CHROMA_LEFT:                return AVCHROMA_LOC_LEFT;
     case MP_CHROMA_CENTER:              return AVCHROMA_LOC_CENTER;
     default:                            return AVCHROMA_LOC_UNSPECIFIED;
@@ -309,8 +316,10 @@ void mp_get_chroma_location(enum mp_chroma_location loc, int *x, int *y)
 {
     *x = 0;
     *y = 0;
-    if (loc == MP_CHROMA_LEFT)
+    if (loc == MP_CHROMA_LEFT || loc == MP_CHROMA_TOPLEFT)
         *x = -1;
+    if (loc == MP_CHROMA_TOPLEFT)
+        *y = -1;
 }
 
 void mp_invert_matrix3x3(float m[3][3])
@@ -481,7 +490,7 @@ float mp_trc_nom_peak(enum mp_csp_trc trc)
 {
     switch (trc) {
     case MP_CSP_TRC_PQ:           return 10000.0 / MP_REF_WHITE;
-    case MP_CSP_TRC_HLG:          return 12.0;
+    case MP_CSP_TRC_HLG:          return 12.0 / MP_REF_WHITE_HLG;
     case MP_CSP_TRC_V_LOG:        return 46.0855;
     case MP_CSP_TRC_S_LOG1:       return 6.52;
     case MP_CSP_TRC_S_LOG2:       return 9.212;

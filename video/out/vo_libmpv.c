@@ -111,6 +111,7 @@ struct mpv_render_context {
 
 const struct render_backend_fns *render_backends[] = {
     &render_backend_gpu,
+    &render_backend_sw,
     NULL
 };
 
@@ -151,11 +152,11 @@ static void dispatch_wakeup(void *ptr)
 }
 
 static struct mp_image *render_get_image(void *ptr, int imgfmt, int w, int h,
-                                         int stride_align)
+                                         int stride_align, int flags)
 {
     struct mpv_render_context *ctx = ptr;
 
-    return ctx->renderer->fns->get_image(ctx->renderer, imgfmt, w, h, stride_align);
+    return ctx->renderer->fns->get_image(ctx->renderer, imgfmt, w, h, stride_align, flags);
 }
 
 int mpv_render_context_create(mpv_render_context **res, mpv_handle *mpv,
@@ -653,13 +654,13 @@ static int control(struct vo *vo, uint32_t request, void *data)
 }
 
 static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
-                                  int stride_align)
+                                  int stride_align, int flags)
 {
     struct vo_priv *p = vo->priv;
     struct mpv_render_context *ctx = p->ctx;
 
     if (ctx->dr)
-        return dr_helper_get_image(ctx->dr, imgfmt, w, h, stride_align);
+        return dr_helper_get_image(ctx->dr, imgfmt, w, h, stride_align, flags);
 
     return NULL;
 }

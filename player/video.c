@@ -176,9 +176,9 @@ int init_video_decoder(struct MPContext *mpctx, struct track *track)
 
     // If possible, set this as parent so the decoder gets the hwdec and DR
     // interfaces.
-    // Note: at least mpv_opengl_cb_uninit_gl() relies on being able to get
-    //       rid of all references to the VO by destroying the VO chain. Thus,
-    //       decoders not linked to vo_chain must not use the hwdec context.
+    // Note: We rely on being able to get rid of all references to the VO by
+    //       destroying the VO chain. Thus, decoders not linked to vo_chain
+    //       must not use the hwdec context.
     if (track->vo_c)
         parent = track->vo_c->filter->f;
 
@@ -261,8 +261,11 @@ void reinit_video_chain_src(struct MPContext *mpctx, struct track *track)
         vo_c->dec_src = track->dec->f->pins[0];
         vo_c->filter->container_fps =
             mp_decoder_wrapper_get_container_fps(track->dec);
-        vo_c->is_coverart = !!track->stream->attached_picture;
+        vo_c->is_coverart = !!track->attached_picture;
         vo_c->is_sparse = track->stream->still_image || vo_c->is_coverart;
+
+        if (vo_c->is_coverart)
+            mp_decoder_wrapper_set_coverart_flag(track->dec, true);
 
         track->vo_c = vo_c;
         vo_c->track = track;
@@ -275,14 +278,17 @@ void reinit_video_chain_src(struct MPContext *mpctx, struct track *track)
 
     update_screensaver_state(mpctx);
 
-    vo_set_paused(vo_c->vo, mpctx->paused);
+    vo_set_paused(vo_c->vo, get_internal_paused(mpctx));
 
     // If we switch on video again, ensure audio position matches up.
-    if (mpctx->ao_chain)
+    if (mpctx->ao_chain && mpctx->ao_chain->ao) {
+        ao_reset(mpctx->ao_chain->ao);
+        mpctx->ao_chain->start_pts_known = false;
         mpctx->audio_status = STATUS_SYNCING;
+    }
 
     reset_video_state(mpctx);
-    reset_subtitle_state(mpctx);
+    term_osd_set_subs(mpctx, NULL);
 
     return;
 
@@ -577,7 +583,7 @@ static void update_avsync_before_frame(struct MPContext *mpctx)
 
     if (mpctx->video_status < STATUS_READY) {
         mpctx->time_frame = 0;
-    } else if (mpctx->display_sync_active || opts->video_sync == VS_NONE) {
+    } else if (mpctx->display_sync_active || vo->opts->video_sync == VS_NONE) {
         // don't touch the timing
     } else if (mpctx->audio_status == STATUS_PLAYING &&
                mpctx->video_status == STATUS_PLAYING &&
@@ -731,7 +737,7 @@ static double compute_audio_drift(struct MPContext *mpctx, double vsync)
 static void adjust_audio_resample_speed(struct MPContext *mpctx, double vsync)
 {
     struct MPOpts *opts = mpctx->opts;
-    int mode = opts->video_sync;
+    int mode = mpctx->video_out->opts->video_sync;
 
     if (mode != VS_DISP_RESAMPLE || mpctx->audio_status != STATUS_PLAYING) {
         mpctx->speed_factor_a = mpctx->speed_factor_v;
@@ -791,7 +797,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
 {
     struct MPOpts *opts = mpctx->opts;
     struct vo *vo = mpctx->video_out;
-    int mode = opts->video_sync;
+    int mode = vo->opts->video_sync;
 
     if (!mpctx->display_sync_active) {
         mpctx->display_sync_error = 0.0;
@@ -1069,7 +1075,6 @@ void write_video(struct MPContext *mpctx)
             if (mpctx->time_frame <= 0 || !has_frame) {
                 MP_VERBOSE(mpctx, "video EOF reached\n");
                 mpctx->video_status = STATUS_EOF;
-                encode_lavc_stream_eof(mpctx->encode_lavc_ctx, STREAM_VIDEO);
             }
         }
 

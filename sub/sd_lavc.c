@@ -91,7 +91,7 @@ static int init(struct sd *sd)
 
     struct sd_lavc_priv *priv = talloc_zero(NULL, struct sd_lavc_priv);
     AVCodecContext *ctx = NULL;
-    AVCodec *sub_codec = avcodec_find_decoder(cid);
+    const AVCodec *sub_codec = avcodec_find_decoder(cid);
     if (!sub_codec)
         goto error;
     ctx = avcodec_alloc_context3(sub_codec);
@@ -191,7 +191,7 @@ static void read_sub_bitmaps(struct sd *sd, struct sub *sub)
             MP_ERR(sd, "unsupported subtitle type from libavcodec\n");
             continue;
         }
-        if (!(r->flags & AV_SUBTITLE_FLAG_FORCED) && opts->forced_subs_only)
+        if (!(r->flags & AV_SUBTITLE_FLAG_FORCED) && opts->forced_subs_only_current)
             continue;
         if (r->w <= 0 || r->h <= 0)
             continue;
@@ -433,7 +433,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res d,
     res->packed = current->data;
     res->packed_w = current->bound_w;
     res->packed_h = current->bound_h;
-    res->format = SUBBITMAP_RGBA;
+    res->format = SUBBITMAP_BGRA;
 
     double video_par = 0;
     if (priv->avctx->codec_id == AV_CODEC_ID_DVD_SUBTITLE &&
@@ -472,6 +472,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res d,
 
             // Allow moving up the subtitle, but only until it clips.
             sub->y = MPMAX(sub->y - offset, 0);
+            sub->y = MPMIN(sub->y + sub->h, h) - sub->h;
         }
     }
 

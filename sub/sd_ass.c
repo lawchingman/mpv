@@ -68,6 +68,9 @@ static const struct sd_filter_functions *const filters[] = {
 #if HAVE_POSIX
     &sd_filter_regex,
 #endif
+#if HAVE_JAVASCRIPT
+    &sd_filter_jsre,
+#endif
     NULL,
 };
 
@@ -100,6 +103,7 @@ static const char *const font_mimetypes[] = {
     "application/vnd.ms-opentype",
     "application/x-font-ttf",
     "application/x-font", // probably incorrect
+    "application/font-sfnt",
     "font/collection",
     "font/otf",
     "font/sfnt",
@@ -197,31 +201,10 @@ static void enable_output(struct sd *sd, bool enable)
     }
 }
 
-static int init(struct sd *sd)
+static void assobjects_init(struct sd *sd)
 {
+    struct sd_ass_priv *ctx = sd->priv;
     struct mp_subtitle_opts *opts = sd->opts;
-    struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
-    sd->priv = ctx;
-
-    char *extradata = sd->codec->extradata;
-    int extradata_size = sd->codec->extradata_size;
-
-    // Note: accept "null" as alias for "ass", so EDL delay_open subtitle
-    //       streams work.
-    if (strcmp(sd->codec->codec, "ass") != 0 &&
-        strcmp(sd->codec->codec, "null") != 0)
-    {
-        ctx->is_converted = true;
-        ctx->converter = lavc_conv_create(sd->log, sd->codec->codec, extradata,
-                                          extradata_size);
-        if (!ctx->converter)
-            return -1;
-        extradata = lavc_conv_get_extradata(ctx->converter);
-        extradata_size = extradata ? strlen(extradata) : 0;
-
-        if (strcmp(sd->codec->codec, "eia_608") == 0)
-            ctx->duration_unknown = 1;
-    }
 
     ctx->ass_library = mp_ass_init(sd->global, sd->log);
     ass_set_extract_fonts(ctx->ass_library, opts->use_embedded_fonts);
@@ -239,6 +222,12 @@ static int init(struct sd *sd)
     ctx->shadow_track->PlayResY = 288;
     mp_ass_add_default_styles(ctx->shadow_track, opts);
 
+    char *extradata = sd->codec->extradata;
+    int extradata_size = sd->codec->extradata_size;
+    if (ctx->converter) {
+        extradata = lavc_conv_get_extradata(ctx->converter);
+        extradata_size = extradata ? strlen(extradata) : 0;
+    }
     if (extradata)
         ass_process_codec_private(ctx->ass_track, extradata, extradata_size);
 
@@ -249,6 +238,40 @@ static int init(struct sd *sd)
 #endif
 
     enable_output(sd, true);
+}
+
+static void assobjects_destroy(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+
+    ass_free_track(ctx->ass_track);
+    ass_free_track(ctx->shadow_track);
+    enable_output(sd, false);
+    ass_library_done(ctx->ass_library);
+}
+
+static int init(struct sd *sd)
+{
+    struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
+    sd->priv = ctx;
+
+    // Note: accept "null" as alias for "ass", so EDL delay_open subtitle
+    //       streams work.
+    if (strcmp(sd->codec->codec, "ass") != 0 &&
+        strcmp(sd->codec->codec, "null") != 0)
+    {
+        ctx->is_converted = true;
+        ctx->converter = lavc_conv_create(sd->log, sd->codec->codec,
+                                          sd->codec->extradata,
+                                          sd->codec->extradata_size);
+        if (!ctx->converter)
+            return -1;
+
+        if (strcmp(sd->codec->codec, "eia_608") == 0)
+            ctx->duration_unknown = 1;
+    }
+
+    assobjects_init(sd);
     filters_init(sd);
 
     ctx->packer = mp_ass_packer_alloc(ctx);
@@ -336,10 +359,14 @@ static void decode(struct sd *sd, struct demux_packet *packet)
             filter_and_add(sd, &pkt2);
         }
         if (ctx->duration_unknown) {
-            for (int n = 0; n < track->n_events - 1; n++) {
+            for (int n = track->n_events - 2; n >= 0; n--) {
                 if (track->events[n].Duration == UNKNOWN_DURATION * 1000) {
-                    track->events[n].Duration = track->events[n + 1].Start -
-                                                track->events[n].Start;
+                    if (track->events[n].Start != track->events[n + 1].Start) {
+                        track->events[n].Duration = track->events[n + 1].Start -
+                                                    track->events[n].Start;
+                    } else {
+                        track->events[n].Duration = track->events[n + 1].Duration;
+                    }
                 }
             }
         }
@@ -398,13 +425,11 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     ass_set_shaper(priv, opts->ass_shaper);
     int set_force_flags = 0;
     if (total_override)
-        set_force_flags |= ASS_OVERRIDE_BIT_STYLE | ASS_OVERRIDE_BIT_FONT_SIZE;
+        set_force_flags |= ASS_OVERRIDE_BIT_STYLE | ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE;
     if (opts->ass_style_override == 4) // 'scale'
-        set_force_flags |= ASS_OVERRIDE_BIT_FONT_SIZE;
-#if LIBASS_VERSION >= 0x01201001
+        set_force_flags |= ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE;
     if (converted)
         set_force_flags |= ASS_OVERRIDE_BIT_ALIGNMENT;
-#endif
 #ifdef ASS_JUSTIFY_AUTO
     if ((converted || opts->ass_style_override) && opts->ass_justify)
         set_force_flags |= ASS_OVERRIDE_BIT_JUSTIFY;
@@ -421,6 +446,10 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     ass_set_font_scale(priv, set_font_scale);
     ass_set_hinting(priv, set_hinting);
     ass_set_line_spacing(priv, set_line_spacing);
+#if LIBASS_VERSION >= 0x01600010
+    if (converted)
+        ass_track_set_feature(track, ASS_FEATURE_WRAP_UNICODE, 1);
+#endif
 }
 
 static bool has_overrides(char *s)
@@ -511,6 +540,12 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res dim,
     struct sub_bitmaps *res = &(struct sub_bitmaps){0};
 
     if (pts == MP_NOPTS_VALUE || !renderer)
+        goto done;
+
+    // Currently no supported text sub formats support a distinction between forced
+    // and unforced lines, so we just assume everything's unforced and discard everything.
+    // If we ever see a format that makes this distinction, we can add support here.
+    if (opts->forced_subs_only_current)
         goto done;
 
     double scale = dim.display_par;
@@ -760,10 +795,7 @@ static void uninit(struct sd *sd)
     filters_destroy(sd);
     if (ctx->converter)
         lavc_conv_uninit(ctx->converter);
-    ass_free_track(ctx->ass_track);
-    ass_free_track(ctx->shadow_track);
-    enable_output(sd, false);
-    ass_library_done(ctx->ass_library);
+    assobjects_destroy(sd);
     talloc_free(ctx->copy_cache);
 }
 
@@ -792,6 +824,10 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
             filters_destroy(sd);
             filters_init(sd);
             ctx->clear_once = true; // allow reloading on seeks
+        }
+        if (flags & UPDATE_SUB_HARD) {
+            assobjects_destroy(sd);
+            assobjects_init(sd);
         }
         return CONTROL_OK;
     }
@@ -868,7 +904,8 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
         };
     }
 
-    if (csp == params.color.space && levels == params.color.levels)
+    if ((csp == params.color.space && levels == params.color.levels) ||
+            params.color.space == MP_CSP_RGB) // Even VSFilter doesn't mangle on RGB video
         return;
 
     bool basic_conv = params.color.space == MP_CSP_BT_709 &&
@@ -919,4 +956,38 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
         mp_map_fixp_color(&vs2rgb, 8, yuv, 8, rgb);
         sb->libass.color = MP_ASS_RGBA(rgb[0], rgb[1], rgb[2], a);
     }
+}
+
+int sd_ass_fmt_offset(const char *evt_fmt)
+{
+    // "Text" is always last (as it's arbitrary content in buf), e.g. format:
+    // "Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+    int n = 0;
+    while (evt_fmt && (evt_fmt = strchr(evt_fmt, ',')))
+         evt_fmt++, n++;
+    return n-1;  // buffer is without the format's Start/End, with ReadOrder
+}
+
+bstr sd_ass_pkt_text(struct sd_filter *ft, struct demux_packet *pkt, int offset)
+{
+    // e.g. pkt->buffer ("4" is ReadOrder): "4,0,Default,,0,0,0,,fifth line"
+    bstr txt = {(char *)pkt->buffer, pkt->len}, t0 = txt;
+    while (offset-- > 0) {
+        int n = bstrchr(txt, ',');
+        if (n < 0) {  // shouldn't happen
+            MP_WARN(ft, "Malformed event '%.*s'\n", BSTR_P(t0));
+            return (bstr){NULL, 0};
+        }
+        txt = bstr_cut(txt, n+1);
+    }
+    return txt;
+}
+
+bstr sd_ass_to_plaintext(char *out, size_t out_siz, const char *in)
+{
+    struct buf b = {out, out_siz, 0};
+    ass_to_plaintext(&b, in);
+    if (b.len < out_siz)
+        out[b.len] = 0;
+    return (bstr){out, b.len};
 }

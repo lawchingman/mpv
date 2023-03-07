@@ -7,6 +7,10 @@ struct ra_vk_ctx_params {
     // See ra_swapchain_fns.get_vsync.
     void (*get_vsync)(struct ra_ctx *ctx, struct vo_vsync_info *info);
 
+    // For special contexts (i.e. wayland) that want to check visibility
+    // before drawing a frame.
+    bool (*check_visible)(struct ra_ctx *ctx);
+
     // In case something special needs to be done on the buffer swap.
     void (*swap_buffers)(struct ra_ctx *ctx);
 };
@@ -22,3 +26,6 @@ bool ra_vk_ctx_resize(struct ra_ctx *ctx, int width, int height);
 
 // May be called on a ra_ctx of any type.
 struct mpvk_ctx *ra_vk_ctx_get(struct ra_ctx *ctx);
+
+// Get the user requested Vulkan device name.
+char *ra_vk_ctx_get_device_name(struct ra_ctx *ctx);

@@ -1,12 +1,5 @@
 local msg = require 'mp.msg'
 
-local function val2str(val)
-    if type(val) == "boolean" then
-        if val then val = "yes" else val = "no" end
-    end
-    return val
-end
-
 -- converts val to type of desttypeval
 local function typeconv(desttypeval, val)
     if type(desttypeval) == "boolean" then
@@ -15,14 +8,14 @@ local function typeconv(desttypeval, val)
         elseif val == "no" then
             val = false
         else
-            msg.error("Error: Can't convert " .. val .. " to boolean!")
+            msg.error("Error: Can't convert '" .. val .. "' to boolean!")
             val = nil
         end
     elseif type(desttypeval) == "number" then
         if not (tonumber(val) == nil) then
             val = tonumber(val)
         else
-            msg.error("Error: Can't convert " .. val .. " to number!")
+            msg.error("Error: Can't convert '" .. val .. "' to number!")
             val = nil
         end
     end
@@ -92,7 +85,7 @@ local function read_options(options, identifier, on_update)
                     -- match found values with defaults
                     if option_types[key] == nil then
                         msg.warn(conffilename..":"..linecounter..
-                            " unknown key " .. key .. ", ignoring")
+                            " unknown key '" .. key .. "', ignoring")
                     else
                         local convval = typeconv(option_types[key], val)
                         if convval == nil then

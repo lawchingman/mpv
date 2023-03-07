@@ -48,10 +48,11 @@ enum {
     // Special thing for encode mode (vo_driver.initially_blocked).
     // Part of VO_EVENTS_USER to make vo_is_ready_for_frame() work properly.
     VO_EVENT_INITIAL_UNBLOCK            = 1 << 7,
+    VO_EVENT_FOCUS                      = 1 << 8,
 
     // Set of events the player core may be interested in.
     VO_EVENTS_USER = VO_EVENT_RESIZE | VO_EVENT_WIN_STATE | VO_EVENT_DPI |
-                     VO_EVENT_INITIAL_UNBLOCK,
+                     VO_EVENT_INITIAL_UNBLOCK | VO_EVENT_FOCUS,
 };
 
 enum mp_voctrl {
@@ -71,6 +72,9 @@ enum mp_voctrl {
     // you could install your own listener.
     VOCTRL_VO_OPTS_CHANGED,
 
+    // Triggered by any change to the OSD (e.g. OSD style changes)
+    VOCTRL_OSD_CHANGED,
+
     /* private to vo_gpu */
     VOCTRL_LOAD_HWDEC_API,
 
@@ -79,7 +83,7 @@ enum mp_voctrl {
     // be updated and redrawn. Optional; emulated if not available.
     VOCTRL_REDRAW_FRAME,
 
-    // Only used internally in vo_opengl_cb
+    // Only used internally in vo_libmpv
     VOCTRL_PREINIT,
     VOCTRL_UNINIT,
     VOCTRL_RECONFIG,
@@ -99,6 +103,8 @@ enum mp_voctrl {
     VOCTRL_GET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
     VOCTRL_SET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
 
+    VOCTRL_GET_FOCUSED,                 // bool*
+
     // char *** (NULL terminated array compatible with CONF_TYPE_STRING_LIST)
     // names for displays the window is on
     VOCTRL_GET_DISPLAY_NAMES,
@@ -117,10 +123,9 @@ enum mp_voctrl {
     VOCTRL_GET_AMBIENT_LUX,             // int*
     VOCTRL_GET_DISPLAY_FPS,             // double*
     VOCTRL_GET_HIDPI_SCALE,             // double*
+    VOCTRL_GET_DISPLAY_RES,             // int[2]
 
-    VOCTRL_GET_PREF_DEINT,              // int*
-
-    /* private to vo_gpu */
+    /* private to vo_gpu and vo_gpu_next */
     VOCTRL_EXTERNAL_RESIZE,
 };
 
@@ -175,6 +180,13 @@ enum {
     VO_CAP_FRAMEDROP    = 1 << 1,
     // VO does not allow frames to be retained (vo_mediacodec_embed).
     VO_CAP_NORETAIN     = 1 << 2,
+    // VO supports applying film grain
+    VO_CAP_FILM_GRAIN   = 1 << 3,
+};
+
+enum {
+    // Require DR buffers to be host-cached (i.e. fast readback)
+    VO_DR_FLAG_HOST_CACHED = 1 << 0,
 };
 
 #define VO_MAX_REQ_FRAMES 10
@@ -342,6 +354,8 @@ struct vo_driver {
      * stride_align is always a value >=1 that is a power of 2. The stride
      * values of the returned image must be divisible by this value.
      *
+     * flags is a combination of VO_DR_FLAG_* flags.
+     *
      * Currently, the returned image must have exactly 1 AVBufferRef set, for
      * internal implementation simplicity.
      *
@@ -349,7 +363,7 @@ struct vo_driver {
      * will silently fallback to a default allocator
      */
     struct mp_image *(*get_image)(struct vo *vo, int imgfmt, int w, int h,
-                                  int stride_align);
+                                  int stride_align, int flags);
 
     /*
      * Thread-safe variant of get_image. Set at most one of these callbacks.
@@ -357,7 +371,7 @@ struct vo_driver {
      * vo_driver.uninit is not called before this function returns.
      */
     struct mp_image *(*get_image_ts)(struct vo *vo, int imgfmt, int w, int h,
-                                     int stride_align);
+                                     int stride_align, int flags);
 
     /*
      * Render the given frame to the VO's backbuffer. This operation will be
@@ -509,7 +523,7 @@ double vo_get_delay(struct vo *vo);
 void vo_discard_timing_info(struct vo *vo);
 struct vo_frame *vo_get_current_vo_frame(struct vo *vo);
 struct mp_image *vo_get_image(struct vo *vo, int imgfmt, int w, int h,
-                              int stride_align);
+                              int stride_align, int flags);
 
 void vo_wakeup(struct vo *vo);
 void vo_wait_default(struct vo *vo, int64_t until_time);

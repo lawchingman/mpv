@@ -67,6 +67,7 @@ static void uninit(struct ra_hwdec *hw)
 {
     struct priv_owner *p = hw->priv;
     hwdec_devices_remove(hw->devs, &p->hwctx);
+    av_buffer_unref(&p->hwctx.av_device_ref);
     SAFE_RELEASE(p->device);
     SAFE_RELEASE(p->device1);
 }
@@ -206,6 +207,9 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
                 .bottom = mapper->dst_params.h,
                 .back = 1,
             }), D3D11_COPY_DISCARD);
+
+        // We no longer need the original texture after copying it.
+        mp_image_unrefp(&mapper->src);
     } else {
         D3D11_TEXTURE2D_DESC desc2d;
         ID3D11Texture2D_GetDesc(tex, &desc2d);

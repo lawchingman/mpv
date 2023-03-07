@@ -53,6 +53,7 @@ struct priv {
 
     int retval;
     bool playing;
+    bool underrun_signalled;
 
     char *cfg_host;
     int cfg_buffer;
@@ -135,6 +136,7 @@ static void underflow_cb(pa_stream *s, void *userdata)
     struct ao *ao = userdata;
     struct priv *priv = ao->priv;
     priv->playing = false;
+    priv->underrun_signalled = true;
     ao_wakeup_playthread(ao);
     pa_threaded_mainloop_signal(priv->mainloop, 0);
 }
@@ -442,7 +444,7 @@ static int init(struct ao *ao)
         .fragsize = -1,
     };
 
-    int flags = PA_STREAM_NOT_MONOTONIC;
+    int flags = PA_STREAM_NOT_MONOTONIC | PA_STREAM_START_CORKED;
     if (!priv->cfg_latency_hacks)
         flags |= PA_STREAM_INTERPOLATE_TIMING|PA_STREAM_AUTO_TIMING_UPDATE;
 
@@ -497,7 +499,8 @@ static void cork(struct ao *ao, bool pause)
     if (waitop_no_unlock(priv, pa_stream_cork(priv->stream, pause, success_cb, ao))
         && priv->retval)
     {
-        priv->playing = true;
+        if (!pause)
+            priv->playing = true;
     } else {
         GENERIC_ERR_MSG("pa_stream_cork() failed");
         priv->playing = false;
@@ -532,6 +535,7 @@ static void reset(struct ao *ao)
     cork(ao, true);
     struct priv *priv = ao->priv;
     pa_threaded_mainloop_lock(priv->mainloop);
+    priv->playing = false;
     priv->retval = 0;
     if (!waitop(priv, pa_stream_flush(priv->stream, success_cb, ao)) ||
         !priv->retval)
@@ -634,8 +638,10 @@ static void audio_get_state(struct ao *ao, struct mp_pcm_state *state)
 
     // Otherwise, PA will keep hammering us for underruns (which it does instead
     // of stopping the stream automatically).
-    if (!state->playing)
-        cork(ao, true);
+    if (!state->playing && priv->underrun_signalled) {
+        reset(ao);
+        priv->underrun_signalled = false;
+    }
 }
 
 /* A callback function that is called when the
@@ -691,9 +697,8 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
 
     case AOCONTROL_SET_MUTE:
     case AOCONTROL_SET_VOLUME: {
-        pa_operation *o;
-
         pa_threaded_mainloop_lock(priv->mainloop);
+        priv->retval = 0;
         uint32_t stream_index = pa_stream_get_index(priv->stream);
         if (cmd == AOCONTROL_SET_VOLUME) {
             const ao_control_vol_t *vol = arg;
@@ -706,27 +711,26 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
                 volume.values[0] = VOL_MP2PA(vol->left);
                 volume.values[1] = VOL_MP2PA(vol->right);
             }
-            o = pa_context_set_sink_input_volume(priv->context, stream_index,
-                                                 &volume, NULL, NULL);
-            if (!o) {
-                pa_threaded_mainloop_unlock(priv->mainloop);
+            if (!waitop(priv, pa_context_set_sink_input_volume(priv->context,
+                                                               stream_index,
+                                                               &volume,
+                                                               context_success_cb, ao)) ||
+                !priv->retval) {
                 GENERIC_ERR_MSG("pa_context_set_sink_input_volume() failed");
                 return CONTROL_ERROR;
             }
         } else if (cmd == AOCONTROL_SET_MUTE) {
             const bool *mute = arg;
-            o = pa_context_set_sink_input_mute(priv->context, stream_index,
-                                               *mute, NULL, NULL);
-            if (!o) {
-                pa_threaded_mainloop_unlock(priv->mainloop);
+            if (!waitop(priv, pa_context_set_sink_input_mute(priv->context,
+                                                             stream_index,
+                                                             *mute,
+                                                             context_success_cb, ao)) ||
+                !priv->retval) {
                 GENERIC_ERR_MSG("pa_context_set_sink_input_mute() failed");
                 return CONTROL_ERROR;
             }
         } else
             abort();
-        /* We don't wait for completion here */
-        pa_operation_unref(o);
-        pa_threaded_mainloop_unlock(priv->mainloop);
         return CONTROL_OK;
     }
 

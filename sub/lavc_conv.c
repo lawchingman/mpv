@@ -75,7 +75,7 @@ struct lavc_conv *lavc_conv_create(struct mp_log *log, const char *codec_name,
     AVCodecContext *avctx = NULL;
     AVDictionary *opts = NULL;
     const char *fmt = get_lavc_format(priv->codec);
-    AVCodec *codec = avcodec_find_decoder(mp_codec_to_av_codec_id(fmt));
+    const AVCodec *codec = avcodec_find_decoder(mp_codec_to_av_codec_id(fmt));
     if (!codec)
         goto error;
     avctx = avcodec_alloc_context3(codec);
@@ -83,7 +83,10 @@ struct lavc_conv *lavc_conv_create(struct mp_log *log, const char *codec_name,
         goto error;
     if (mp_lavc_set_extradata(avctx, extradata, extradata_len) < 0)
         goto error;
+
+#if LIBAVCODEC_VERSION_MAJOR < 59
     av_dict_set(&opts, "sub_text_format", "ass", 0);
+#endif
     av_dict_set(&opts, "flags2", "+ass_ro_flush_noop", 0);
     if (strcmp(codec_name, "eia_608") == 0)
         av_dict_set(&opts, "real_time", "1", 0);

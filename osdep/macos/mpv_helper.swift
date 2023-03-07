@@ -17,11 +17,15 @@
 
 import Cocoa
 
-class MPVHelper: LogHelper {
+typealias swift_wakeup_cb_fn = (@convention(c) (UnsafeMutableRawPointer?) -> Void)?
 
+class MPVHelper {
+    var log: LogHelper
     var vo: UnsafeMutablePointer<vo>
     var optsCachePtr: UnsafeMutablePointer<m_config_cache>
     var optsPtr: UnsafeMutablePointer<mp_vo_opts>
+    var macOptsCachePtr: UnsafeMutablePointer<m_config_cache>
+    var macOptsPtr: UnsafeMutablePointer<macos_opts>
 
     // these computed properties return a local copy of the struct accessed:
     // - don't use if you rely on the pointers
@@ -29,34 +33,34 @@ class MPVHelper: LogHelper {
     var vout: vo { get { return vo.pointee } }
     var optsCache: m_config_cache { get { return optsCachePtr.pointee } }
     var opts: mp_vo_opts { get { return optsPtr.pointee } }
+    var macOptsCache: m_config_cache { get { return macOptsCachePtr.pointee } }
+    var macOpts: macos_opts { get { return macOptsPtr.pointee } }
 
     var input: OpaquePointer { get { return vout.input_ctx } }
-    var macOpts: macos_opts = macos_opts()
 
-    init(_ vo: UnsafeMutablePointer<vo>, _ name: String) {
+    init(_ vo: UnsafeMutablePointer<vo>, _ log: LogHelper) {
         self.vo = vo
+        self.log = log
 
         guard let app = NSApp as? Application,
               let cache = m_config_cache_alloc(vo, vo.pointee.global, app.getVoSubConf()) else
         {
-            print("NSApp couldn't be retrieved")
+            log.sendError("NSApp couldn't be retrieved")
             exit(1)
         }
 
-        let newlog = mp_log_new(vo, vo.pointee.log, name)
         optsCachePtr = cache
         optsPtr = UnsafeMutablePointer<mp_vo_opts>(OpaquePointer(cache.pointee.opts))
 
-        super.init(newlog)
-
-        guard let ptr = mp_get_config_group(vo,
-                                            vo.pointee.global,
-                                            app.getMacOSConf()) else
+        guard let macCache = m_config_cache_alloc(vo,
+                                                  vo.pointee.global,
+                                                  app.getMacOSConf()) else
         {
             // will never be hit, mp_get_config_group asserts for invalid groups
-            return
+            exit(1)
         }
-        macOpts = UnsafeMutablePointer<macos_opts>(OpaquePointer(ptr)).pointee
+        macOptsCachePtr = macCache
+        macOptsPtr = UnsafeMutablePointer<macos_opts>(OpaquePointer(macCache.pointee.opts))
     }
 
     func canBeDraggedAt(_ pos: NSPoint) -> Bool {
@@ -76,23 +80,37 @@ class MPVHelper: LogHelper {
         mp_input_put_wheel(input, mpkey, delta)
     }
 
-    func nextChangedConfig(property: inout UnsafeMutableRawPointer?) -> Bool {
+    func nextChangedOption(property: inout UnsafeMutableRawPointer?) -> Bool {
         return m_config_cache_get_next_changed(optsCachePtr, &property)
     }
 
-    func setConfigProperty(fullscreen: Bool) {
+    func setOption(fullscreen: Bool) {
         optsPtr.pointee.fullscreen = fullscreen
-        m_config_cache_write_opt(optsCachePtr, UnsafeMutableRawPointer(&optsPtr.pointee.fullscreen))
+        _ = withUnsafeMutableBytes(of: &optsPtr.pointee.fullscreen) { (ptr: UnsafeMutableRawBufferPointer) in
+            m_config_cache_write_opt(optsCachePtr, ptr.baseAddress)
+        }
     }
 
-    func setConfigProperty(minimized: Bool) {
+    func setOption(minimized: Bool) {
         optsPtr.pointee.window_minimized = Int32(minimized)
-        m_config_cache_write_opt(optsCachePtr, UnsafeMutableRawPointer(&optsPtr.pointee.window_minimized))
+        _ = withUnsafeMutableBytes(of: &optsPtr.pointee.window_minimized) { (ptr: UnsafeMutableRawBufferPointer) in
+            m_config_cache_write_opt(optsCachePtr, ptr.baseAddress)
+        }
     }
 
-    func setConfigProperty(maximized: Bool) {
+    func setOption(maximized: Bool) {
         optsPtr.pointee.window_maximized = Int32(maximized)
-        m_config_cache_write_opt(optsCachePtr, UnsafeMutableRawPointer(&optsPtr.pointee.window_maximized))
+        _ = withUnsafeMutableBytes(of: &optsPtr.pointee.window_maximized) { (ptr: UnsafeMutableRawBufferPointer) in
+            m_config_cache_write_opt(optsCachePtr, ptr.baseAddress)
+        }
+    }
+
+    func setMacOptionCallback(_ callback: swift_wakeup_cb_fn, context object: AnyObject) {
+        m_config_cache_set_wakeup_cb(macOptsCachePtr, callback, MPVHelper.bridge(obj: object))
+    }
+
+    func nextChangedMacOption(property: inout UnsafeMutableRawPointer?) -> Bool {
+        return m_config_cache_get_next_changed(macOptsCachePtr, &property)
     }
 
     func command(_ cmd: String) {
@@ -110,5 +128,29 @@ class MPVHelper: LogHelper {
     // (__bridge T*)
     class func bridge<T: AnyObject>(ptr: UnsafeRawPointer) -> T {
         return Unmanaged<T>.fromOpaque(ptr).takeUnretainedValue()
+    }
+
+    class func withUnsafeMutableRawPointers(_ arguments: [Any],
+                                               pointers: [UnsafeMutableRawPointer?] = [],
+                                                closure: (_ pointers: [UnsafeMutableRawPointer?]) -> Void) {
+        if arguments.count > 0 {
+            let args = Array(arguments.dropFirst(1))
+            var newPtrs = pointers
+            var firstArg = arguments.first
+            withUnsafeMutableBytes(of: &firstArg) { (ptr: UnsafeMutableRawBufferPointer) in
+                newPtrs.append(ptr.baseAddress)
+                withUnsafeMutableRawPointers(args, pointers: newPtrs, closure: closure)
+            }
+
+            return
+        }
+
+        closure(pointers)
+    }
+
+    class func getPointer<T>(_ value: inout T) -> UnsafeMutableRawPointer? {
+        return withUnsafeMutableBytes(of: &value) { (ptr: UnsafeMutableRawBufferPointer) in
+            ptr.baseAddress
+        }
     }
 }

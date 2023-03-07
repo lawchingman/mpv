@@ -52,6 +52,7 @@ extern const struct vo_driver video_out_x11;
 extern const struct vo_driver video_out_vdpau;
 extern const struct vo_driver video_out_xv;
 extern const struct vo_driver video_out_gpu;
+extern const struct vo_driver video_out_gpu_next;
 extern const struct vo_driver video_out_libmpv;
 extern const struct vo_driver video_out_null;
 extern const struct vo_driver video_out_image;
@@ -61,9 +62,11 @@ extern const struct vo_driver video_out_drm;
 extern const struct vo_driver video_out_direct3d;
 extern const struct vo_driver video_out_sdl;
 extern const struct vo_driver video_out_vaapi;
+extern const struct vo_driver video_out_dmabuf_wayland;
 extern const struct vo_driver video_out_wlshm;
 extern const struct vo_driver video_out_rpi;
 extern const struct vo_driver video_out_tct;
+extern const struct vo_driver video_out_sixel;
 
 const struct vo_driver *const video_out_drivers[] =
 {
@@ -72,6 +75,9 @@ const struct vo_driver *const video_out_drivers[] =
     &video_out_mediacodec_embed,
 #endif
     &video_out_gpu,
+#if HAVE_LIBPLACEBO_NEXT
+    &video_out_gpu_next,
+#endif
 #if HAVE_VDPAU
     &video_out_vdpau,
 #endif
@@ -86,6 +92,9 @@ const struct vo_driver *const video_out_drivers[] =
 #endif
 #if HAVE_SDL2_VIDEO
     &video_out_sdl,
+#endif
+#if HAVE_DMABUF_WAYLAND
+    &video_out_dmabuf_wayland,
 #endif
 #if HAVE_VAAPI_X11 && HAVE_GPL
     &video_out_vaapi,
@@ -105,6 +114,9 @@ const struct vo_driver *const video_out_drivers[] =
 #endif
 #if HAVE_RPI_MMAL
     &video_out_rpi,
+#endif
+#if HAVE_SIXEL
+    &video_out_sixel,
 #endif
     &video_out_lavc,
     NULL
@@ -203,7 +215,6 @@ const struct m_obj_list vo_obj_list = {
         {"opengl-cb", "libmpv"},
         {0}
     },
-    .allow_unknown_entries = true,
     .allow_trailer = true,
     .disallow_positional_parameters = true,
     .use_global_options = true,
@@ -671,6 +682,7 @@ void vo_control_async(struct vo *vo, int request, void *data)
         break;
     case VOCTRL_KILL_SCREENSAVER:
     case VOCTRL_RESTORE_SCREENSAVER:
+    case VOCTRL_OSD_CHANGED:
         break;
     default:
         abort(); // requires explicit support
@@ -1054,10 +1066,10 @@ static void do_redraw(struct vo *vo)
 }
 
 static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
-                                     int stride_align)
+                                     int stride_align, int flags)
 {
     struct vo *vo = ctx;
-    return vo->driver->get_image(vo, imgfmt, w, h, stride_align);
+    return vo->driver->get_image(vo, imgfmt, w, h, stride_align, flags);
 }
 
 static void *vo_thread(void *ptr)
@@ -1388,12 +1400,12 @@ struct vo_frame *vo_get_current_vo_frame(struct vo *vo)
 }
 
 struct mp_image *vo_get_image(struct vo *vo, int imgfmt, int w, int h,
-                              int stride_align)
+                              int stride_align, int flags)
 {
     if (vo->driver->get_image_ts)
-        return vo->driver->get_image_ts(vo, imgfmt, w, h, stride_align);
+        return vo->driver->get_image_ts(vo, imgfmt, w, h, stride_align, flags);
     if (vo->in->dr_helper)
-        return dr_helper_get_image(vo->in->dr_helper, imgfmt, w, h, stride_align);
+        return dr_helper_get_image(vo->in->dr_helper, imgfmt, w, h, stride_align, flags);
     return NULL;
 }
 

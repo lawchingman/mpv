@@ -200,6 +200,7 @@ static void fill_pixdesc_layout(struct mp_imgfmt_desc *desc,
     // explicitly marks big endian formats => don't need to guess whether a
     // format is little endian, or not affected by byte order.
     bool is_be = pd->flags & AV_PIX_FMT_FLAG_BE;
+    bool is_ne = MP_SELECT_LE_BE(false, true) == is_be;
 
     // Packed sub-sampled YUV is very... special.
     bool is_packed_ss_yuv = pd->log2_chroma_w && !pd->log2_chroma_h &&
@@ -208,6 +209,22 @@ static void fill_pixdesc_layout(struct mp_imgfmt_desc *desc,
 
     if (is_packed_ss_yuv)
         desc->bpp[0] = pd->comp[1].step * 8;
+
+    // Determine if there are any byte overlaps => relevant for determining
+    // access unit for endian, since pixdesc does not expose this, and assumes
+    // a weird model where you do separate memory fetches for each component.
+    bool any_shared_bytes = !!(pd->flags & AV_PIX_FMT_FLAG_BITSTREAM);
+    for (int c = 0; c < pd->nb_components; c++) {
+        for (int i = 0; i < c; i++) {
+            const AVComponentDescriptor *d1 = &pd->comp[c];
+            const AVComponentDescriptor *d2 = &pd->comp[i];
+            if (d1->plane == d2->plane) {
+                if (d1->offset + (d1->depth + 7) / 8u > d2->offset &&
+                    d2->offset + (d2->depth + 7) / 8u > d1->offset)
+                    any_shared_bytes = true;
+            }
+        }
+    }
 
     int el_bits = (pd->flags & AV_PIX_FMT_FLAG_BITSTREAM) ? 1 : 8;
     for (int c = 0; c < pd->nb_components; c++) {
@@ -246,37 +263,47 @@ static void fill_pixdesc_layout(struct mp_imgfmt_desc *desc,
         //   component at offset 0 is read as 8 bit; BG is read as 16 bits)
         // - if BE flag is set, swap the word before proceeding
         // - extract via shift and mask derived by depth
-        int word = mp_round_next_power_of_2(MPMAX(d->depth + shift, 8)) / 8;
+        int word = mp_round_next_power_of_2(MPMAX(d->depth + shift, 8));
         // The purpose of this is unknown. It's an absurdity fished out of
         // av_read_image_line2()'s implementation. It seems technically
         // unnecessary, and provides no information. On the other hand, it
         // compensates for seemingly bogus packed integer pixdescs; this
         // is "why" some formats use d->offset = -1.
-        if (is_be && el_bits == 8 && word == 1)
+        if (is_be && el_bits == 8 && word == 8)
             offset += 8;
-        // Pixdesc's model requires accesses with varying word-sizes. This
-        // is complete bullshit, so we transform it into word swaps before
-        // further processing.
-        if (is_be && word == 1) {
-            // Probably packed RGB formats with varying word sizes. Assume
-            // the word access size is the entire pixel.
-            int logend = mp_log2(plane_bits) - 3;
-            if (!MP_IS_POWER_OF_2(plane_bits) || logend < 0 || logend > 3)
-                goto fail;
-            if (!desc->endian_shift)
-                desc->endian_shift = logend;
-            if (desc->endian_shift != logend)
-                goto fail;
-            offset = (1 << desc->endian_shift) * 8 - 8 - offset;
+        // Pixdesc's model sometimes requires accesses with varying word-sizes,
+        // as seen in bgr565 and other formats. Also, it makes you read some
+        // formats with multiple endian-dependent accesses, where accessing a
+        // larger unit would make more sense. (Consider X2RGB10BE, for which
+        // pixdesc wants you to perform 3 * 2 byte accesses, and swap each of
+        // the read 16 bit words. What you really want is to swap the entire 4
+        // byte thing, and then extract the components with bit shifts).
+        // This is complete bullshit, so we transform it into word swaps before
+        // further processing. Care needs to be taken to not change formats like
+        // P010 or YA16 (prefer component accesses for them; P010 isn't even
+        // representable, because endian_shift is for all planes).
+        // As a heuristic, assume that if any components share a byte, the whole
+        // pixel is read as a single memory access and endian swapped at once.
+        int access_size = 8;
+        if (plane_bits > 8) {
+            if (any_shared_bytes) {
+                access_size = plane_bits;
+                if (is_be && word != access_size) {
+                    // Before: offset = 8*byte_offset (with word bits of data)
+                    // After: offset = bit_offset into swapped endian_size word
+                    offset = access_size - word - offset;
+                }
+            } else {
+                access_size = word;
+            }
         }
-        if (is_be && word > 1) {
-            int logend = mp_log2(word);
-            if (desc->endian_shift && desc->endian_shift != logend)
-                goto fail; // fortunately not needed/never happens
-            if (logend > 3)
-                goto fail;
-            desc->endian_shift = logend;
-        }
+        int endian_size = (access_size && !is_ne) ? access_size : 8;
+        int endian_shift = mp_log2(endian_size) - 3;
+        if (!MP_IS_POWER_OF_2(endian_size) || endian_shift < 0 || endian_shift > 3)
+            goto fail;
+        if (desc->endian_shift && desc->endian_shift != endian_shift)
+            goto fail;
+        desc->endian_shift = endian_shift;
 
         // We always use bit offsets; this doesn't lose any information,
         // and pixdesc is merely more redundant.
@@ -310,7 +337,6 @@ static void fill_pixdesc_layout(struct mp_imgfmt_desc *desc,
     // can represent (or it's something like Bayer: components in the same bits,
     // but different alternating lines).
     bool any_shared_bits = false;
-    bool any_shared_bytes = false;
     for (int c = 0; c < pd->nb_components; c++) {
         for (int i = 0; i < c; i++) {
             struct mp_imgfmt_comp_desc *c1 = &desc->comps[c];
@@ -319,9 +345,6 @@ static void fill_pixdesc_layout(struct mp_imgfmt_desc *desc,
                 if (c1->offset + c1->size > c2->offset &&
                     c2->offset + c2->size > c1->offset)
                     any_shared_bits = true;
-                if ((c1->offset + c1->size + 7) / 8u > c2->offset / 8u &&
-                    (c2->offset + c2->size + 7) / 8u > c1->offset / 8u)
-                    any_shared_bytes = true;
             }
         }
     }
@@ -437,12 +460,13 @@ static bool mp_imgfmt_get_desc_from_pixdesc(int mpfmt, struct mp_imgfmt_desc *ou
         desc.align_x = 8 / desc.bpp[0]; // expect power of 2
 
     // Very heuristical.
-    bool is_be = desc.endian_shift > 0;
+    bool is_ne = !desc.endian_shift;
     bool need_endian = (desc.comps[0].size % 8u && desc.bpp[0] > 8) ||
                        desc.comps[0].size > 8;
 
     if (need_endian) {
-        desc.flags |= is_be ? MP_IMGFLAG_BE : MP_IMGFLAG_LE;
+        bool is_le = MP_SELECT_LE_BE(is_ne, !is_ne);
+        desc.flags |= is_le ? MP_IMGFLAG_LE : MP_IMGFLAG_BE;
     } else {
         desc.flags |= MP_IMGFLAG_LE | MP_IMGFLAG_BE;
     }

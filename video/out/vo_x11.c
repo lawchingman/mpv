@@ -34,6 +34,7 @@
 
 #include <errno.h>
 
+#include "present_sync.h"
 #include "x11_common.h"
 
 #include <sys/ipc.h>
@@ -207,13 +208,29 @@ static bool resize(struct vo *vo)
             (desc.flags & MP_IMGFLAG_NE) && !(desc.flags & MP_IMGFLAG_ALPHA) &&
             desc.bpp[0] <= 8 * sizeof(unsigned long) &&
             p->myximage[0]->bits_per_pixel == desc.bpp[0] &&
-            p->myximage[0]->byte_order == LSBFirst &&
-            p->myximage[0]->red_mask == MAKE_MASK(desc.comps[0]) &&
-            p->myximage[0]->green_mask == MAKE_MASK(desc.comps[1]) &&
-            p->myximage[0]->blue_mask == MAKE_MASK(desc.comps[2]))
+            p->myximage[0]->byte_order == MP_SELECT_LE_BE(LSBFirst, MSBFirst))
         {
-            mpfmt = fmt;
-            break;
+            // desc.comps[] uses little endian bit offsets, so "swap" the
+            // offsets here.
+            if (MP_SELECT_LE_BE(0, 1)) {
+                // Except for formats that use byte swapping; for these, the
+                // offsets are in native endian. There is no way to distinguish
+                // which one a given format is (could even be both), and using
+                // mp_find_other_endian() is just a guess.
+                if (!mp_find_other_endian(fmt)) {
+                    for (int c = 0; c < 3; c++) {
+                        desc.comps[c].offset =
+                            desc.bpp[0] - desc.comps[c].size -desc.comps[c].offset;
+                    }
+                }
+            }
+            if (p->myximage[0]->red_mask == MAKE_MASK(desc.comps[0]) &&
+                p->myximage[0]->green_mask == MAKE_MASK(desc.comps[1]) &&
+                p->myximage[0]->blue_mask == MAKE_MASK(desc.comps[2]))
+            {
+                mpfmt = fmt;
+                break;
+            }
         }
     }
 
@@ -291,6 +308,17 @@ static void flip_page(struct vo *vo)
     struct priv *p = vo->priv;
     Display_Image(p, p->myximage[p->current_buf]);
     p->current_buf = (p->current_buf + 1) % 2;
+    if (vo->x11->use_present) {
+        vo_x11_present(vo);
+        present_sync_swap(vo->x11->present);
+    }
+}
+
+static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
+{
+    struct vo_x11_state *x11 = vo->x11;
+    if (x11->use_present)
+        present_sync_get_info(x11->present, info);
 }
 
 // Note: REDRAW_FRAME can call this with NULL.
@@ -299,6 +327,9 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     struct priv *p = vo->priv;
 
     wait_for_completion(vo, 1);
+    bool render = vo_x11_check_visible(vo);
+    if (!render)
+        return;
 
     struct mp_image *img = &p->mp_ximages[p->current_buf];
 
@@ -416,6 +447,7 @@ const struct vo_driver video_out_x11 = {
     .control = control,
     .draw_image = draw_image,
     .flip_page = flip_page,
+    .get_vsync = get_vsync,
     .wakeup = vo_x11_wakeup,
     .wait_events = vo_x11_wait_events,
     .uninit = uninit,

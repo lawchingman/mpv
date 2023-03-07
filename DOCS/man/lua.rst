@@ -37,6 +37,12 @@ scripting backend to use for it. For Lua, it is ``.lua``. If the extension is
 not recognized, an error is printed. (If an error happens, the extension is
 either mistyped, or the backend was not compiled into your mpv binary.)
 
+mpv internally loads the script's name by stripping the ``.lua`` extension and
+replacing all nonalphanumeric characters with ``_``. E.g., ``my-tools.lua``
+becomes ``my_tools``. If there are several scripts with the same name, it is
+made unique by appending a number. This is the name returned by
+``mp.get_script_name()``.
+
 Entries with ``.disable`` extension are always ignored.
 
 If a script is a directory (either if a directory is passed to ``--script``,
@@ -184,6 +190,8 @@ The ``mp`` module is preloaded, although it can be loaded manually with
 
     If starting the command failed for some reason, ``nil, error`` is returned,
     and ``fn`` is called indicating failure, using the same error value.
+
+    ``fn`` is always called asynchronously, even if the command failed to start.
 
 ``mp.abort_async_command(t)``
     Abort a ``mp.command_native_async`` call. The argument is the return value
@@ -474,7 +482,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
             the timer callback function fn is run).
 
     Note that these are methods, and you have to call them using ``:`` instead
-    of ``.`` (Refer to http://www.lua.org/manual/5.2/manual.html#3.4.9 .)
+    of ``.`` (Refer to https://www.lua.org/manual/5.2/manual.html#3.4.9 .)
 
     Example:
 
@@ -500,11 +508,11 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     Return the name of the current script. The name is usually made of the
     filename of the script, with directory and file extension removed. If
     there are several scripts which would have the same name, it's made unique
-    by appending a number.
+    by appending a number. Any nonalphanumeric characters are replaced with ``_``.
 
     .. admonition:: Example
 
-        The script ``/path/to/fooscript.lua`` becomes ``fooscript``.
+        The script ``/path/to/foo-script.lua`` becomes ``foo_script``.
 
 ``mp.get_script_directory()``
     Return the directory if this is a script packaged as directory (see
@@ -520,18 +528,6 @@ Advanced mp functions
 
 These also live in the ``mp`` module, but are documented separately as they
 are useful only in special situations.
-
-``mp.suspend()``
-    This function has been deprecated in mpv 0.21.0 and does nothing starting
-    with mpv 0.23.0 (no replacement).
-
-``mp.resume()``
-    This function has been deprecated in mpv 0.21.0 and does nothing starting
-    with mpv 0.23.0 (no replacement).
-
-``mp.resume_all()``
-    This function has been deprecated in mpv 0.21.0 and does nothing starting
-    with mpv 0.23.0 (no replacement).
 
 ``mp.get_wakeup_pipe()``
     Calls ``mpv_get_wakeup_pipe()`` and returns the read end of the wakeup
@@ -618,7 +614,7 @@ are useful only in special situations.
 
 ``mp.get_osd_size()``
     Returns a tuple of ``osd_width, osd_height, osd_par``. The first two give
-    the size of the OSD in pixels (for video ouputs like ``--vo=xv``, this may
+    the size of the OSD in pixels (for video outputs like ``--vo=xv``, this may
     be "scaled" pixels). The third is the display pixel aspect ratio.
 
     May return invalid/nonsense values if OSD is not initialized yet.
@@ -763,7 +759,7 @@ strictly part of the guaranteed API.
         ``mtime``
             time of last modification
         ``ctime``
-            time of last metadata change (Linux) / time of creation (Windows)
+            time of last metadata change
         ``is_file``
             Whether ``path`` is a regular file (boolean)
         ``is_dir``
@@ -775,7 +771,7 @@ strictly part of the guaranteed API.
     The booleans ``is_file`` and ``is_dir`` are provided as a convenience;
     they can be and are derived from ``mode``.
 
-    On error (eg. path does not exist), ``nil, error`` is returned.
+    On error (e.g. path does not exist), ``nil, error`` is returned.
 
 ``utils.split_path(path)``
     Split a path into directory component and filename component, and return
@@ -825,6 +821,10 @@ strictly part of the guaranteed API.
 ``utils.getpid()``
     Returns the process ID of the running mpv process. This can be used to identify
     the calling mpv when launching (detached) subprocesses.
+
+``utils.get_env_list()``
+    Returns the C environment as a list of strings. (Do not confuse this with
+    the Lua "environment", which is an unrelated concept.)
 
 ``utils.parse_json(str [, trail])``
     Parses the given string argument as JSON, and returns it as a Lua table. On
@@ -885,8 +885,22 @@ guarantee a stable interface.
     their result (normally, the Lua scripting interface is asynchronous from
     the point of view of the player core). ``priority`` is an arbitrary integer
     that allows ordering among hooks of the same kind. Using the value 50 is
-    recommended as neutral default value. ``fn`` is the function that will be
-    called during execution of the hook.
+    recommended as neutral default value.
+
+    ``fn(hook)`` is the function that will be called during execution of the
+    hook. The parameter passed to it (``hook``) is a Lua object that can control
+    further aspects about the currently invoked hook. It provides the following
+    methods:
+
+        ``defer()``
+            Returning from the hook function should not automatically continue
+            the hook. Instead, the API user wants to call ``hook:cont()`` on its
+            own at a later point in time (before or after the function has
+            returned).
+
+        ``cont()``
+            Continue the hook. Doesn't need to be called unless ``defer()`` was
+            called.
 
     See `Hooks`_ for currently existing hooks and what they do - only the hook
     list is interesting; handling hook execution is done by the Lua script

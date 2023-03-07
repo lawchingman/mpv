@@ -82,6 +82,11 @@ static void deint_process(struct mp_filter *f)
         char *args[] = {"mode", "send_field", NULL};
         p->sub.filter =
             mp_create_user_filter(f, MP_OUTPUT_CHAIN_VIDEO, "yadif_cuda", args);
+    } else if (img->imgfmt == IMGFMT_VAAPI) {
+        char *args[] = {"deint", "motion-adaptive",
+                        "interlaced-only", "yes", NULL};
+        p->sub.filter =
+            mp_create_user_filter(f, MP_OUTPUT_CHAIN_VIDEO, "vavpp", args);
     } else {
         has_filter = false;
     }
@@ -329,9 +334,9 @@ static void aspeed_process(struct mp_filter *f)
 
         if (req_filter) {
             if (req_filter == 1) {
-                MP_VERBOSE(f, "adding scaletempo\n");
+                MP_VERBOSE(f, "adding scaletempo2\n");
                 p->sub.filter = mp_create_user_filter(f, MP_OUTPUT_CHAIN_AUDIO,
-                                                      "scaletempo", NULL);
+                                                      "scaletempo2", NULL);
             } else if (req_filter == 2) {
                 MP_VERBOSE(f, "adding drop\n");
                 p->sub.filter = mp_create_user_filter(f, MP_OUTPUT_CHAIN_AUDIO,

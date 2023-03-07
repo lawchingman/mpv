@@ -41,19 +41,13 @@ struct encode_lavc_context {
     struct encode_opts *options;
     struct mp_log *log;
     struct encode_priv *priv;
-    AVOutputFormat *oformat;
+    const AVOutputFormat *oformat;
     const char *filename;
 
     // All entry points must be guarded with the lock. Functions called by
     // the playback core lock this automatically, but ao_lavc.c and vo_lavc.c
     // must lock manually before accessing state.
     pthread_mutex_t lock;
-
-    // sync to audio mode
-    double audio_pts_offset;
-
-    double last_audio_in_pts;
-    int64_t samples_since_last_pts;
 
     // anti discontinuity mode
     double next_in_pts;
@@ -77,7 +71,7 @@ struct encoder_context {
     struct mpv_global *global;
     struct encode_opts *options;
     struct mp_log *log;
-    AVOutputFormat *oformat;
+    const AVOutputFormat *oformat;
 
     // (avoid using this)
     struct encode_lavc_context *encode_lavc_ctx;
@@ -89,7 +83,9 @@ struct encoder_context {
     AVCodecContext *encoder;
     struct mux_stream *mux_stream;
 
+    // (essentially private)
     struct stream *twopass_bytebuffer;
+    AVPacket *pkt;
 };
 
 // Free with talloc_free(). (Keep in mind actual deinitialization requires

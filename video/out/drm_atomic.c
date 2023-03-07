@@ -165,7 +165,7 @@ struct drm_atomic_context *drm_atomic_create_context(struct mp_log *log, int fd,
 
     plane_res = drmModeGetPlaneResources(fd);
     if (!plane_res) {
-        mp_err(log, "Cannot retrieve plane ressources: %s\n", mp_strerror(errno));
+        mp_err(log, "Cannot retrieve plane resources: %s\n", mp_strerror(errno));
         goto fail;
     }
 
@@ -274,7 +274,7 @@ struct drm_atomic_context *drm_atomic_create_context(struct mp_log *log, int fd,
             mp_verbose(log, "Using %s plane %d as drmprime plane\n", plane_type, drmprime_video_plane_id);
             ctx->drmprime_video_plane = drm_object_create(log, ctx->fd, drmprime_video_plane_id, DRM_MODE_OBJECT_PLANE);
         } else {
-            mp_verbose(log, "Failed to find drmprime plane with idx=%d. drmprime-drm hwdec interop will not work\n", drmprime_video_plane_idx);
+            mp_verbose(log, "Failed to find drmprime plane with idx=%d. drmprime-overlay hwdec interop will not work\n", drmprime_video_plane_idx);
         }
     } else {
         mp_verbose(log, "Found drmprime plane with ID %d\n", ctx->drmprime_video_plane->id);
@@ -389,6 +389,9 @@ bool drm_atomic_save_old_state(struct drm_atomic_context *ctx)
     if (0 > drm_object_get_property(ctx->crtc, "ACTIVE", &ctx->old_state.crtc.active))
         ret = false;
 
+    // This property was added in kernel 5.0. We will just ignore any errors.
+    drm_object_get_property(ctx->crtc, "VRR_ENABLED", &ctx->old_state.crtc.vrr_enabled);
+
     if (0 > drm_object_get_property(ctx->connector, "CRTC_ID", &ctx->old_state.connector.crtc_id))
         ret = false;
 
@@ -411,6 +414,9 @@ bool drm_atomic_restore_old_state(drmModeAtomicReqPtr request, struct drm_atomic
 
     if (0 > drm_object_set_property(request, ctx->connector, "CRTC_ID", ctx->old_state.connector.crtc_id))
         ret = false;
+
+    // This property was added in kernel 5.0. We will just ignore any errors.
+    drm_object_set_property(request, ctx->crtc, "VRR_ENABLED", ctx->old_state.crtc.vrr_enabled);
 
     if (!drm_mode_ensure_blob(ctx->fd, &ctx->old_state.crtc.mode))
         ret = false;

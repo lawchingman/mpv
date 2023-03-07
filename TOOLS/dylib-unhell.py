@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import re
 import os
@@ -69,7 +69,7 @@ def lib_name(lib):
 
 def process_libraries(libs_dict, binary):
     libs_set = set(libs_dict)
-    # Remove binary from libs_set to prevent a duplicate of the binary being 
+    # Remove binary from libs_set to prevent a duplicate of the binary being
     # added to the libs directory.
     libs_set.remove(binary)
 

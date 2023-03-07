@@ -127,13 +127,7 @@ int m_config_parse(m_config_t *config, const char *location, bstr data,
             goto error;
         }
 
-        int res;
-        if (bstr_equals0(option, "profile-desc")) {
-            m_profile_set_desc(profile, value);
-            res = 0;
-        } else {
-            res = m_config_set_profile_option(config, profile, option, value);
-        }
+        int res = m_config_set_profile_option(config, profile, option, value);
         if (res < 0) {
             MP_ERR(config, "%s setting option %.*s='%.*s' failed.\n",
                    loc, BSTR_P(option), BSTR_P(value));
@@ -182,10 +176,10 @@ static bstr read_file(struct mp_log *log, const char *filename)
         }
         size += s;
     }
-    assert(0);
+    MP_ASSERT_UNREACHABLE();
 }
 
-// Load options and profiles from from a config file.
+// Load options and profiles from a config file.
 //  conffile: path to the config file
 //  initial_section: default section where to add normal options
 //  flags: M_SETOPT_* bits

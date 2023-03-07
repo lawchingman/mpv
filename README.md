@@ -21,7 +21,7 @@
 
 * [Wiki](https://github.com/mpv-player/mpv/wiki)
 * [FAQ][FAQ]
-* [Manual](http://mpv.io/manual/master/)
+* [Manual](https://mpv.io/manual/master/)
 
 
 ## Overview
@@ -53,7 +53,7 @@ Releases can be found on the [release list][releases].
 
 
 For semi-official builds and third-party packages please see
-[mpv.io/installation](http://mpv.io/installation/).
+[mpv.io/installation](https://mpv.io/installation/).
 
 ## Changelog
 
@@ -73,11 +73,27 @@ Changes to the default key bindings are indicated in
 
 
 Compiling with full features requires development files for several
-external libraries. Below is a list of some important requirements.
+external libraries. One of the two build systems supported by mpv is required:
+[meson](https://mesonbuild.com/index.html) or [waf](https://waf.io/). Meson
+can be obtained from your distro or PyPI. Waf can be downloaded by using the
+`./bootstrap.py` script. It will get the latest version of waf that was tested
+with mpv. Some documentation about the differences between the build systems are
+located in [build-system-differences][build-system-differences].
 
-The mpv build system uses [waf](https://waf.io/), but we don't store it in the
-repository. The `./bootstrap.py` script will download the latest version
-of waf that was tested with the build system.
+### Meson
+
+After creating your build directory (e.g. `meson setup build`), you can view a list
+of all the build options via `meson configure build`. You could also just simply
+look at the `meson_options.txt` file. Logs are stored in `meson-logs` within
+your build directory.
+
+Example:
+
+    meson setup build
+    meson compile -C build
+    meson install -C build
+
+### Waf
 
 For a list of the available build options use `./waf configure --help`. If
 you think you have support for some feature installed but configure fails to
@@ -85,10 +101,10 @@ detect it, the file `build/config.log` may contain information about the
 reasons for the failure.
 
 NOTE: To avoid cluttering the output with unreadable spam, `--help` only shows
-one of the two switches for each option. If the option is autodetected by
-default, the `--disable-***` switch is printed; if the option is disabled by
-default, the `--enable-***` switch is printed. Either way, you can use
-`--enable-***` or `--disable-**` regardless of what is printed by `--help`.
+one of the two switches for each option. If the option is autodetected or
+enabled by default, the `--disable-***` switch is printed; if the option is
+disabled by default, the `--enable-***` switch is printed. Either way, you can
+use `--enable-***` or `--disable-**` regardless of what is printed by `--help`.
 
 To build the software you can use `./waf build`: the result of the compilation
 will be located in `build/mpv`. You can use `./waf install` to install mpv
@@ -121,9 +137,9 @@ Libass dependencies (when building libass):
 
 - gcc or clang, yasm on x86 and x86_64
 - fribidi, freetype, fontconfig development headers (for libass)
-- harfbuzz (optional, required for correct rendering of combining characters,
-  particularly for correct rendering of non-English text on OSX, and
-  Arabic/Indic scripts on any platform)
+- harfbuzz (required for correct rendering of combining characters, particularly
+  for correct rendering of non-English text on OSX, and Arabic/Indic scripts on
+  any platform)
 
 FFmpeg dependencies (when building FFmpeg):
 
@@ -181,7 +197,7 @@ changes come and talk to us on IRC before you start working on them. It will
 make code review easier for both parties later on.
 
 You can check [the wiki](https://github.com/mpv-player/mpv/wiki/Stuff-to-do)
-or the [issue tracker](https://github.com/mpv-player/mpv/issues?q=is%3Aopen+is%3Aissue+label%3A%22feature+request%22)
+or the [issue tracker](https://github.com/mpv-player/mpv/issues?q=is%3Aopen+is%3Aissue+label%3Ameta%3Afeature-request)
 for ideas on what you could contribute with.
 
 ## License
@@ -201,8 +217,8 @@ see the [FAQ][FAQ].
 Most activity happens on the IRC channel and the github issue tracker.
 
 - **GitHub issue tracker**: [issue tracker][issue-tracker] (report bugs here)
-- **User IRC Channel**: `#mpv` on `irc.freenode.net`
-- **Developer IRC Channel**: `#mpv-devel` on `irc.freenode.net`
+- **User IRC Channel**: `#mpv` on `irc.libera.chat`
+- **Developer IRC Channel**: `#mpv-devel` on `irc.libera.chat`
 
 [FAQ]: https://github.com/mpv-player/mpv/wiki/FAQ
 [releases]: https://github.com/mpv-player/mpv/releases
@@ -214,3 +230,4 @@ Most activity happens on the IRC channel and the github issue tracker.
 [api-changes]: https://github.com/mpv-player/mpv/blob/master/DOCS/client-api-changes.rst
 [restore-old-bindings]: https://github.com/mpv-player/mpv/blob/master/etc/restore-old-bindings.conf
 [contribute.md]: https://github.com/mpv-player/mpv/blob/master/DOCS/contribute.md
+[build-system-differences]: https://github.com/mpv-player/mpv/blob/master/DOCS/build-system-differences.md
